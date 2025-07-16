@@ -28,6 +28,17 @@ io.on('connection', async (socket) => {
   console.log('Player connected:', socket.playerId);
   const player = await Player.findById(socket.playerId);
 
+  socket.on('joinSystem', (systemId) => {
+  socket.leave(socket.currentSystem); // Leave old
+  socket.join(systemId);
+  socket.currentSystem = systemId;
+  socket.emit('systemData', { id: systemId /* Load from DB */ });
+  io.to(systemId).emit('playerEntered', { id: socket.playerId });
+});
+socket.on('move', ({ x, y }) => {
+  io.to(socket.currentSystem).emit('playerMoved', { id: socket.playerId, x, y });
+});
+
   // Join alliance room if player is in one
   if (player.alliance) socket.join(`alliance_${player.alliance}`);
 
