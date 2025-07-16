@@ -6,6 +6,7 @@ const cors = require('cors');
 const mongoose = require('mongoose');
 const jwt = require('jsonwebtoken');
 const Player = require('./models/Player');
+const ChatMessage = require('./models/ChatMessage');
 const onlineUsers = new Map(); // Key: playerId (string), Value: socket instance
 
 const app = express();

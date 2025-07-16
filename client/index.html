@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Space Game</title>
+  <script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/socket.io-client@4.7.5/dist/socket.io.min.js"></script>
+  <style>
+    body { margin: 0; background: black; color: white; font-family: Arial; }
+    #login { position: absolute; top: 20px; left: 20px; z-index: 10; }
+    #chat { position: absolute; bottom: 20px; left: 20px; width: 300px; height: 200px; background: rgba(0,0,0,0.8); padding: 10px; z-index: 10; display: none; }
+    #messages { height: 150px; overflow-y: scroll; }
+    #chat input { width: 200px; }
+  </style>
+</head>
+<body>
+  <div id="login">
+    <input id="username" placeholder="Username" />
+    <input id="password" type="password" placeholder="Password" />
+    <button onclick="register()">Register</button>
+    <button onclick="login()">Login</button>
+  </div>
+  <div id="chat">
+    <div id="messages"></div>
+    <input id="message" placeholder="Type message..." />
+    <button onclick="sendGlobalChat()">Send Global</button>
+    <!-- Add buttons for alliance/DM later -->
+  </div>
+  <script src="main.js"></script>
+</body>
+</html>
