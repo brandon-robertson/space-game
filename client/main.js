@@ -89,14 +89,19 @@ function initGame() {
     }
 
     create() {
-      this.otherShips = new Map(); // Key: playerId, Value: sprite
+      this.otherShips = new Map();
 
       // Background
       this.add.image(400, 300, 'stars').setOrigin(0.5);
 
       // Player ship
-      this.playerShip = this.add.sprite(400, 300, 'destroyer').setScale(0.5).setInteractive();
-      this.playerShip.setDepth(1); // Above bg
+      this.playerShip = this.add.sprite(400, 300, 'destroyer').setScale(0.3).setInteractive();
+      this.playerShip.setDepth(1);
+
+      // Set own ship position from server
+      socket.on('systemData', (data) => {
+        this.playerShip.setPosition(data.myPos.x, data.myPos.y);
+      });
 
       // Tap to move (time-based tween)
       this.input.on('pointerdown', (pointer) => {
@@ -112,8 +117,8 @@ function initGame() {
 
       // Handle other players entering
       socket.on('playerEntered', (data) => {
-        if (data.id !== socket.id) { // Not self
-          const otherShip = this.add.sprite(100, 100, 'destroyer').setScale(0.5); // Start pos from server later
+        if (!this.otherShips.has(data.id)) {
+          const otherShip = this.add.sprite(data.x, data.y, 'destroyer').setScale(0.3);
           this.otherShips.set(data.id, otherShip);
         }
       });
@@ -131,6 +136,21 @@ function initGame() {
           });
         }
       });
+
+      // Handle existing players on join
+      socket.on('existingPlayers', (players) => {
+        players.forEach(p => {
+          if (!this.otherShips.has(p.id)) {
+            const otherShip = this.add.sprite(p.x, p.y, 'destroyer').setScale(0.3);
+            this.otherShips.set(p.id, otherShip);
+          }
+        });
+      });
+    }
+
+    shutdown() {
+      this.otherShips.forEach(ship => ship.destroy());
+      this.otherShips.clear();
     }
   }
 

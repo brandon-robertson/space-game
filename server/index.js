@@ -28,15 +28,40 @@ io.on('connection', async (socket) => {
   console.log('Player connected:', socket.playerId);
   const player = await Player.findById(socket.playerId);
 
-  socket.on('joinSystem', (systemId) => {
-    socket.leave(socket.currentSystem); // Leave old
+  socket.on('joinSystem', async (systemId) => {
+    if (socket.currentSystem) socket.leave(socket.currentSystem);
     socket.join(systemId);
     socket.currentSystem = systemId;
-    socket.emit('systemData', { id: systemId /* Load from DB */ });
-    io.to(systemId).emit('playerEntered', { id: socket.playerId, x: 400, y: 300 }); // Hardcoded
+
+    const player = await Player.findById(socket.playerId);
+    // Update player's position in DB if needed (e.g., default to center)
+    if (!player.ship.position.systemId || player.ship.position.systemId !== systemId) {
+      player.ship.position = { systemId, x: 400, y: 300 }; // Center for new enter
+      await player.save();
+    }
+
+    // Send system data to joiner (including own pos)
+    socket.emit('systemData', { id: systemId, myPos: { x: player.ship.position.x, y: player.ship.position.y } });
+
+    // Broadcast entry to others, with pos
+    socket.to(systemId).emit('playerEntered', { id: socket.playerId, x: player.ship.position.x, y: player.ship.position.y });
+
+    // Send existing players to new joiner
+    const existingPlayers = [];
+    for (let s of Object.values(io.sockets.sockets)) {
+      if (s.currentSystem === systemId && s.playerId !== socket.playerId) {
+        const existingPlayer = await Player.findById(s.playerId);
+        existingPlayers.push({ id: s.playerId, x: existingPlayer.ship.position.x, y: existingPlayer.ship.position.y });
+      }
+    }
+    socket.emit('existingPlayers', existingPlayers);
   });
-  socket.on('move', ({ x, y }) => {
-    io.to(socket.currentSystem).emit('playerMoved', { id: socket.playerId, x, y });
+  socket.on('move', async ({ x, y }) => {
+    const player = await Player.findById(socket.playerId);
+    player.ship.position.x = x;
+    player.ship.position.y = y;
+    await player.save();
+    socket.to(socket.currentSystem).emit('playerMoved', { id: socket.playerId, x, y });
   });
 
   // Join alliance room if player is in one
