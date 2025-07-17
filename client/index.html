@@ -11,6 +11,7 @@
     #chat { position: absolute; bottom: 20px; left: 20px; width: 300px; height: 200px; background: rgba(0,0,0,0.8); padding: 10px; z-index: 10; display: none; }
     #messages { height: 150px; overflow-y: scroll; }
     #chat input { width: 200px; }
+    #game-container { display: none; }
   </style>
 </head>
 <body>
@@ -26,6 +27,7 @@
     <button onclick="sendGlobalChat()">Send Global</button>
     <!-- Add buttons for alliance/DM later -->
   </div>
+  <div id="game-container"></div>
   <script src="main.js"></script>
 </body>
 </html>
