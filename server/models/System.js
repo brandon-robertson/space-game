@@ -16,4 +16,6 @@ const systemSchema = new mongoose.Schema({
   hub: { type: mongoose.Schema.Types.ObjectId, ref: 'Hub' },
 });
 
+console.log('System Schema resources:', systemSchema.obj.resources);
+
 module.exports = mongoose.models.System || mongoose.model('System', systemSchema);

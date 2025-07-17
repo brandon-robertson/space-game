@@ -1,4 +1,6 @@
-require('dotenv').config(); // Loads .env
+require('dotenv').config();
+console.log('MONGO_URI from env:', process.env.MONGO_URI);
+
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -7,16 +9,18 @@ const mongoose = require('mongoose');
 const jwt = require('jsonwebtoken');
 const Player = require('./models/Player');
 const ChatMessage = require('./models/ChatMessage');
-
-// Clear Mongoose model cache for System to avoid OverwriteModelError
-delete mongoose.connection.models['System'];
-
-const System = require('./models/System');
-const onlineUsers = new Map(); // Key: playerId (string), Value: socket instance
+const { MongoClient } = require('mongodb');
+const onlineUsers = new Map();
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: '*' } }); // Allows browser connections
+const io = new Server(server, {
+  cors: {
+    origin: '*',
+    methods: ['GET', 'POST'],
+    credentials: true
+  }
+});
 
 // Authenticate sockets with JWT
 io.use((socket, next) => {
@@ -53,46 +57,60 @@ io.on('connection', async (socket) => {
       await player.save();
     }
 
-    // Fetch existing
-    const existingPlayers = [];
-    const socketsInRoom = await io.in(systemId).fetchSockets();
-    for (let s of socketsInRoom) {
-      if (s.playerId !== socket.playerId) {
-        const existingPlayer = await Player.findById(s.playerId);
-        existingPlayers.push({ id: s.playerId, x: existingPlayer.ship.position.x, y: existingPlayer.ship.position.y });
+    // Use MongoDB native driver for system management
+    const client = new MongoClient(process.env.MONGO_URI);
+    try {
+      await client.connect();
+      const database = client.db(mongoose.connection.db.databaseName);
+      const collection = database.collection('systems');
+      let systemDoc = await collection.findOne({ id: systemId });
+      if (!systemDoc) {
+        const resourcesArray = [{ id: 'node1', type: 'ore', yield: 50, position: { x: 600, y: 400 }, active: true }];
+        console.log('Inserting new system with resources:', JSON.stringify({ id: systemId, name: 'Test System', type: 'mining', resources: resourcesArray, connections: [], npcs: [], hub: null }, null, 2));
+        await collection.insertOne({
+          id: systemId,
+          name: 'Test System',
+          type: 'mining',
+          resources: resourcesArray,
+          connections: [],
+          npcs: [],
+          hub: null
+        });
+        systemDoc = await collection.findOne({ id: systemId });
+        console.log('Inserted system document:', JSON.stringify(systemDoc, null, 2));
+      } else {
+        console.log('Using existing system document:', JSON.stringify(systemDoc, null, 2));
+        // Update resources if missing
+        if (!systemDoc.resources || systemDoc.resources.length === 0) {
+          await collection.updateOne({ id: systemId }, { $set: { resources: [{ id: 'node1', type: 'ore', yield: 50, position: { x: 600, y: 400 }, active: true }] } });
+          systemDoc = await collection.findOne({ id: systemId });
+          console.log('Updated system document:', JSON.stringify(systemDoc, null, 2));
+        }
       }
+
+      // Fetch existing players
+      const existingPlayers = [];
+      const socketsInRoom = await io.in(systemId).fetchSockets();
+      for (let s of socketsInRoom) {
+        if (s.playerId !== socket.playerId) {
+          const existingPlayer = await Player.findById(s.playerId);
+          existingPlayers.push({ id: s.playerId, x: existingPlayer.ship.position.x, y: existingPlayer.ship.position.y });
+        }
+      }
+
+      // Send to joiner with resources
+      console.log('Emitting systemData with resources:', JSON.stringify({ id: systemId, myPos: { x: player.ship.position.x, y: player.ship.position.y }, existingPlayers, resources: systemDoc.resources }, null, 2));
+      socket.emit('systemData', { id: systemId, myPos: { x: player.ship.position.x, y: player.ship.position.y }, existingPlayers, resources: systemDoc.resources });
+
+      // Broadcast entry
+      socket.to(systemId).emit('playerEntered', { id: socket.playerId, x: player.ship.position.x, y: player.ship.position.y });
+    } catch (err) {
+      console.error('Error in joinSystem:', err);
+    } finally {
+      await client.close();
     }
-
-    // Load system data (nodes/resources)
-    let system = await System.findOne({ id: systemId });
-    if (!system) {
-      system = new System({
-        id: systemId,
-        name: 'Test System',
-        type: 'mining',
-        resources: [
-          { id: 'node1', type: 'ore', yield: 50, position: { x: 600, y: 400 }, active: true }
-        ]
-      });
-      await system.save();
-    }
-
-    // Send to joiner (now includes resources)
-    socket.emit('systemData', {
-      id: systemId,
-      myPos: { x: player.ship.position.x, y: player.ship.position.y },
-      existingPlayers,
-      resources: system.resources
-    });
-
-    // Broadcast entry
-    socket.to(systemId).emit('playerEntered', { id: socket.playerId, x: player.ship.position.x, y: player.ship.position.y });
   });
 
-  // Add 'startMove' for during animation (client emits this on tween start)
-  socket.on('startMove', ({ targetX, targetY }) => {
-    socket.to(socket.currentSystem).emit('playerStartMove', { id: socket.playerId, targetX, targetY });
-  });
   socket.on('move', async ({ x, y }) => {
     const player = await Player.findById(socket.playerId);
     if (player) {
@@ -103,39 +121,6 @@ io.on('connection', async (socket) => {
     }
   });
 
-  // Join alliance room if player is in one
-  if (player.alliance) socket.join(`alliance_${player.alliance}`);
-
-  // Add to online map
-  onlineUsers.set(socket.playerId, socket);
-
-  // Load chat history on connect
-  // Global: Last 50 global messages
-  const globalHistory = await ChatMessage.find({ type: 'global' }).sort({ timestamp: -1 }).limit(50);
-  socket.emit('chatHistory', { type: 'global', messages: globalHistory.reverse() }); // Reverse for chronological
-
-  // Alliance: If in alliance, last 50
-  if (player.alliance) {
-    const allianceHistory = await ChatMessage.find({ type: 'alliance', alliance: player.alliance }).sort({ timestamp: -1 }).limit(50);
-    socket.emit('chatHistory', { type: 'alliance', messages: allianceHistory.reverse() });
-  }
-
-  // DMs: Fetch open DMs (e.g., unique 'to/from' pairs with recent messages)
-  const dmPartners = await ChatMessage.aggregate([
-    { $match: { type: 'dm', $or: [{ from: player.username }, { to: player.username }] } },
-    { $group: { _id: { $cond: [{ $eq: ['$from', player.username] }, '$to', '$from'] } } }
-  ]);
-  for (let partner of dmPartners) {
-    const dmHistory = await ChatMessage.find({
-      type: 'dm',
-      $or: [
-        { from: player.username, to: partner._id },
-        { from: partner._id, to: player.username }
-      ]
-    }).sort({ timestamp: -1 }).limit(50);
-    socket.emit('chatHistory', { type: 'dm', to: partner._id, messages: dmHistory.reverse() });
-  }
-
   socket.on('disconnect', () => {
     console.log('Player disconnected:', socket.playerId);
     if (socket.currentSystem) {
@@ -144,83 +129,23 @@ io.on('connection', async (socket) => {
     onlineUsers.delete(socket.playerId);
   });
 
-  // Send chat message
   socket.on('sendChat', async (data) => {
-    const { type, message, to, alliance } = data; // 'to' for DM, 'alliance' for alliance chat
+    const { type, message, to, alliance } = data;
     const from = player.username;
-
     const chatMsg = new ChatMessage({ type, from, message, timestamp: new Date() });
     if (type === 'alliance') chatMsg.alliance = player.alliance;
     if (type === 'dm') chatMsg.to = to;
-
     await chatMsg.save();
-
     if (type === 'global') {
       io.emit('newChat', { type: 'global', from, message });
     } else if (type === 'alliance' && player.alliance) {
       io.to(`alliance_${player.alliance}`).emit('newChat', { type: 'alliance', from, message });
-      // Join alliance room on connect (add earlier: socket.join(`alliance_${player.alliance}`);)
     } else if (type === 'dm') {
-      // Find receiver's player doc to get ID
       const receiver = await Player.findOne({ username: to });
-      if (!receiver) return; // Invalid recipient
-      const receiverId = receiver._id.toString();
-
-      // Emit to sender
-      socket.emit('newChat', { type: 'dm', from, to, message });
-
-      // Emit to receiver if online
-      const receiverSocket = onlineUsers.get(receiverId);
-      if (receiverSocket) {
-        receiverSocket.emit('newChat', { type: 'dm', from, to: receiver.username, message });
-      }
-    }
-  });
-
-  socket.on('startMining', async ({ nodeId }) => {
-    const system = await System.findOne({ id: socket.currentSystem });
-    const node = system.resources.find(r => r.id === nodeId && r.active);
-    if (node) {
-      // Simulate mining time (e.g., 10s)
-      setTimeout(async () => {
-        const player = await Player.findById(socket.playerId);
-        player.minerals += node.yield;
-        player.ship.stats.cargo += node.yield; // Update cargo
-        await player.save();
-        node.active = false; // Deplete node
-        await system.save();
-        socket.emit('miningComplete', { minerals: node.yield });
-        socket.to(socket.currentSystem).emit('nodeDepleted', { nodeId });
-      }, 10000); // 10s delay
-    }
-  });
-
-  socket.on('attack', async ({ targetId }) => {
-    const attacker = await Player.findById(socket.playerId);
-    const target = await Player.findById(targetId);
-    if (target && attacker.ship.position.systemId === target.ship.position.systemId) {
-      const weapon = attacker.ship.weapons[0]; // First weapon for simplicity
-      const now = new Date();
-      if (now - weapon.lastFired > weapon.cooldown * 1000) {
-        const damage = 20; // Example; based on weapon
-        target.ship.stats.shield -= damage;
-        if (target.ship.stats.shield < 0) {
-          target.ship.stats.armor += target.ship.stats.shield; // Overflow to armor
-          target.ship.stats.shield = 0;
-          if (target.ship.stats.armor <= 0) {
-            // Death: Respawn
-            target.ship.stats.armor = 100;
-            target.ship.stats.shield = 100;
-            target.ship.position = { systemId: '1', x: 400, y: 300 }; // Safe zone
-            await target.save();
-            const targetSocket = onlineUsers.get(targetId);
-            if (targetSocket) targetSocket.emit('destroyed');
-          }
-        }
-        await target.save();
-        weapon.lastFired = now;
-        await attacker.save();
-        io.to(socket.currentSystem).emit('attacked', { attackerId: socket.playerId, targetId, damage });
+      if (receiver) {
+        socket.emit('newChat', { type: 'dm', from, to, message });
+        const receiverSocket = onlineUsers.get(receiver._id.toString());
+        if (receiverSocket) receiverSocket.emit('newChat', { type: 'dm', from, to: receiver.username, message });
       }
     }
   });
@@ -230,7 +155,10 @@ app.use(cors());
 app.use(express.json());
 
 // Connect to MongoDB
-mongoose.connect(process.env.MONGO_URI)
+mongoose.connect(process.env.MONGO_URI || 'mongodb://localhost:27017/test', {
+  useNewUrlParser: true,
+  useUnifiedTopology: true
+})
   .then(() => console.log('Connected to MongoDB'))
   .catch(err => console.error('DB connection error:', err));
 
@@ -246,7 +174,7 @@ app.post('/register', async (req, res) => {
   try {
     const existing = await Player.findOne({ username });
     if (existing) return res.status(400).json({ error: 'Username taken' });
-    const player = new Player({ username, password }); // TODO: Hash password later!
+    const player = new Player({ username, password });
     await player.save();
     const token = jwt.sign({ id: player._id }, process.env.JWT_SECRET, { expiresIn: '1d' });
     res.json({ token, username });
