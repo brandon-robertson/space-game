@@ -1,3 +1,5 @@
+let socket; // Make socket global
+
 function register() {
   const username = document.getElementById('username').value;
   const password = document.getElementById('password').value;
@@ -33,7 +35,7 @@ function initGame() {
   document.getElementById('chat').style.display = 'block';
 
   // Create socket with auth
-  const socket = io('https://orange-halibut-9675jr46x9h799j-3000.app.github.dev/', {
+  socket = io('https://orange-halibut-9675jr46x9h799j-3000.app.github.dev/', {
     auth: { token: localStorage.getItem('token') }
   });
 
@@ -168,15 +170,15 @@ function initGame() {
 
       this.input.on('pointerup', (pointer) => {
         const dist = Phaser.Math.Distance.Between(downX, downY, pointer.x, pointer.y);
-        if (dist < 5) { // Small threshold for true click (adjust if sensitive)
-          socket.emit('startMove', { targetX: pointer.x, targetY: pointer.y });
-          const duration = Phaser.Math.Distance.Between(this.playerShip.x, this.playerShip.y, pointer.x, pointer.y) * 5;
+        if (dist < 5) { // Only allow if not a drag
+          socket.emit('startMove', { targetX: downX, targetY: downY }); // Use pointerdown coords!
+          const duration = Phaser.Math.Distance.Between(this.playerShip.x, this.playerShip.y, downX, downY) * 5;
           this.tweens.add({
             targets: this.playerShip,
-            x: pointer.x,
-            y: pointer.y,
+            x: downX,
+            y: downY,
             duration: duration,
-            onComplete: () => socket.emit('move', { x: pointer.x, y: pointer.y })
+            onComplete: () => socket.emit('move', { x: downX, y: downY })
           });
         }
         // Ignore if mouse moved (drag/ghost prevention)
