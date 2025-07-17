@@ -7,6 +7,11 @@ const mongoose = require('mongoose');
 const jwt = require('jsonwebtoken');
 const Player = require('./models/Player');
 const ChatMessage = require('./models/ChatMessage');
+
+// Clear Mongoose model cache for System to avoid OverwriteModelError
+delete mongoose.connection.models['System'];
+
+const System = require('./models/System');
 const onlineUsers = new Map(); // Key: playerId (string), Value: socket instance
 
 const app = express();
@@ -58,8 +63,27 @@ io.on('connection', async (socket) => {
       }
     }
 
-    // Send to joiner
-    socket.emit('systemData', { id: systemId, myPos: { x: player.ship.position.x, y: player.ship.position.y }, existingPlayers });
+    // Load system data (nodes/resources)
+    let system = await System.findOne({ id: systemId });
+    if (!system) {
+      system = new System({
+        id: systemId,
+        name: 'Test System',
+        type: 'mining',
+        resources: [
+          { id: 'node1', type: 'ore', yield: 50, position: { x: 600, y: 400 }, active: true }
+        ]
+      });
+      await system.save();
+    }
+
+    // Send to joiner (now includes resources)
+    socket.emit('systemData', {
+      id: systemId,
+      myPos: { x: player.ship.position.x, y: player.ship.position.y },
+      existingPlayers,
+      resources: system.resources
+    });
 
     // Broadcast entry
     socket.to(systemId).emit('playerEntered', { id: socket.playerId, x: player.ship.position.x, y: player.ship.position.y });
@@ -149,6 +173,54 @@ io.on('connection', async (socket) => {
       const receiverSocket = onlineUsers.get(receiverId);
       if (receiverSocket) {
         receiverSocket.emit('newChat', { type: 'dm', from, to: receiver.username, message });
+      }
+    }
+  });
+
+  socket.on('startMining', async ({ nodeId }) => {
+    const system = await System.findOne({ id: socket.currentSystem });
+    const node = system.resources.find(r => r.id === nodeId && r.active);
+    if (node) {
+      // Simulate mining time (e.g., 10s)
+      setTimeout(async () => {
+        const player = await Player.findById(socket.playerId);
+        player.minerals += node.yield;
+        player.ship.stats.cargo += node.yield; // Update cargo
+        await player.save();
+        node.active = false; // Deplete node
+        await system.save();
+        socket.emit('miningComplete', { minerals: node.yield });
+        socket.to(socket.currentSystem).emit('nodeDepleted', { nodeId });
+      }, 10000); // 10s delay
+    }
+  });
+
+  socket.on('attack', async ({ targetId }) => {
+    const attacker = await Player.findById(socket.playerId);
+    const target = await Player.findById(targetId);
+    if (target && attacker.ship.position.systemId === target.ship.position.systemId) {
+      const weapon = attacker.ship.weapons[0]; // First weapon for simplicity
+      const now = new Date();
+      if (now - weapon.lastFired > weapon.cooldown * 1000) {
+        const damage = 20; // Example; based on weapon
+        target.ship.stats.shield -= damage;
+        if (target.ship.stats.shield < 0) {
+          target.ship.stats.armor += target.ship.stats.shield; // Overflow to armor
+          target.ship.stats.shield = 0;
+          if (target.ship.stats.armor <= 0) {
+            // Death: Respawn
+            target.ship.stats.armor = 100;
+            target.ship.stats.shield = 100;
+            target.ship.position = { systemId: '1', x: 400, y: 300 }; // Safe zone
+            await target.save();
+            const targetSocket = onlineUsers.get(targetId);
+            if (targetSocket) targetSocket.emit('destroyed');
+          }
+        }
+        await target.save();
+        weapon.lastFired = now;
+        await attacker.save();
+        io.to(socket.currentSystem).emit('attacked', { attackerId: socket.playerId, targetId, damage });
       }
     }
   });
