@@ -102,7 +102,7 @@ function initGame() {
     }
 
     preload() {
-      this.load.image('destroyer', 'assets/destroyer.png');
+      this.load.image('destroyer', 'assets/destroyer.jpg');
     }
 
     create() {
@@ -112,21 +112,21 @@ function initGame() {
       this.add.image(400, 300, 'stars').setOrigin(0.5);
 
       // Player ship
-      this.playerShip = this.add.sprite(400, 300, 'destroyer').setScale(0.3).setInteractive();
+      this.playerShip = this.add.sprite(400, 300, 'destroyer').setScale(0.1).setInteractive();
       this.playerShip.setDepth(1);
 
       // System data (set own pos and create existing)
       socket.on('systemData', (data) => {
         this.playerShip.setPosition(data.myPos.x, data.myPos.y);
         data.existingPlayers.forEach(p => {
-          const otherShip = this.add.sprite(p.x, p.y, 'destroyer').setScale(0.3);
+          const otherShip = this.add.sprite(p.x, p.y, 'destroyer').setScale(0.1);
           this.otherShips.set(p.id, otherShip);
         });
       });
 
       // Player entered
       socket.on('playerEntered', (data) => {
-        const otherShip = this.add.sprite(data.x, data.y, 'destroyer').setScale(0.3);
+        const otherShip = this.add.sprite(data.x, data.y, 'destroyer').setScale(0.1);
         this.otherShips.set(data.id, otherShip);
       });
 
