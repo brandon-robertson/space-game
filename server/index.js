@@ -16,9 +16,15 @@ const io = new Server(server, { cors: { origin: '*' } }); // Allows browser conn
 // Authenticate sockets with JWT
 io.use((socket, next) => {
   const token = socket.handshake.auth.token;
-  if (!token) return next(new Error('No token'));
+  if (!token) {
+    console.error('No token provided');
+    return next(new Error('No token'));
+  }
   jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
-    if (err) return next(new Error('Invalid token'));
+    if (err) {
+      console.error('Invalid token:', err);
+      return next(new Error('Invalid token'));
+    }
     socket.playerId = decoded.id;
     next();
   });
@@ -42,7 +48,7 @@ io.on('connection', async (socket) => {
       await player.save();
     }
 
-    // Fetch existing players with positions
+    // Fetch existing
     const existingPlayers = [];
     const socketsInRoom = await io.in(systemId).fetchSockets();
     for (let s of socketsInRoom) {
@@ -52,10 +58,10 @@ io.on('connection', async (socket) => {
       }
     }
 
-    // Send to new joiner
+    // Send to joiner
     socket.emit('systemData', { id: systemId, myPos: { x: player.ship.position.x, y: player.ship.position.y }, existingPlayers });
 
-    // Broadcast new player to others
+    // Broadcast entry
     socket.to(systemId).emit('playerEntered', { id: socket.playerId, x: player.ship.position.x, y: player.ship.position.y });
   });
 
