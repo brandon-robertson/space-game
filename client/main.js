@@ -95,55 +95,60 @@ function initGame() {
       this.add.image(400, 300, 'stars').setOrigin(0.5);
 
       // Player ship
-      this.playerShip = this.add.sprite(400, 300, 'destroyer').setScale(0.3).setInteractive();
+      this.playerShip = this.add.sprite(400, 300, 'destroyer').setScale(0.5).setInteractive();
       this.playerShip.setDepth(1);
 
-      // Set own ship position from server
+      // Set own ship position and create all existing ships immediately
       socket.on('systemData', (data) => {
         this.playerShip.setPosition(data.myPos.x, data.myPos.y);
-      });
-
-      // Tap to move (time-based tween)
-      this.input.on('pointerdown', (pointer) => {
-        const duration = Phaser.Math.Distance.Between(this.playerShip.x, this.playerShip.y, pointer.x, pointer.y) * 5; // Time based on distance
-        this.tweens.add({
-          targets: this.playerShip,
-          x: pointer.x,
-          y: pointer.y,
-          duration: duration,
-          onComplete: () => socket.emit('move', { x: pointer.x, y: pointer.y }) // Send to server
+        data.existingPlayers.forEach(p => {
+          if (!this.otherShips.has(p.id)) {
+            const otherShip = this.add.sprite(p.x, p.y, 'destroyer').setScale(0.5);
+            this.otherShips.set(p.id, otherShip);
+          }
         });
       });
 
       // Handle other players entering
       socket.on('playerEntered', (data) => {
         if (!this.otherShips.has(data.id)) {
-          const otherShip = this.add.sprite(data.x, data.y, 'destroyer').setScale(0.3);
+          const otherShip = this.add.sprite(data.x, data.y, 'destroyer').setScale(0.5);
           this.otherShips.set(data.id, otherShip);
         }
       });
 
-      // Handle other player movements
-      socket.on('playerMoved', (data) => {
+      // Handle other player movement start (predicted movement)
+      socket.on('playerStartMove', (data) => {
         const otherShip = this.otherShips.get(data.id);
         if (otherShip) {
-          const duration = Phaser.Math.Distance.Between(otherShip.x, otherShip.y, data.x, data.y) * 5;
+          const duration = Phaser.Math.Distance.Between(otherShip.x, otherShip.y, data.targetX, data.targetY) * 5;
           this.tweens.add({
             targets: otherShip,
-            x: data.x,
-            y: data.y,
+            x: data.targetX,
+            y: data.targetY,
             duration: duration
           });
         }
       });
 
-      // Handle existing players on join
-      socket.on('existingPlayers', (players) => {
-        players.forEach(p => {
-          if (!this.otherShips.has(p.id)) {
-            const otherShip = this.add.sprite(p.x, p.y, 'destroyer').setScale(0.3);
-            this.otherShips.set(p.id, otherShip);
-          }
+      // Handle other player movements (snap to final pos if tween lags)
+      socket.on('playerMoved', (data) => {
+        const otherShip = this.otherShips.get(data.id);
+        if (otherShip) {
+          otherShip.setPosition(data.x, data.y);
+        }
+      });
+
+      // Tap to move (time-based tween)
+      this.input.on('pointerdown', (pointer) => {
+        socket.emit('startMove', { targetX: pointer.x, targetY: pointer.y }); // Predict for others
+        const duration = Phaser.Math.Distance.Between(this.playerShip.x, this.playerShip.y, pointer.x, pointer.y) * 5;
+        this.tweens.add({
+          targets: this.playerShip,
+          x: pointer.x,
+          y: pointer.y,
+          duration: duration,
+          onComplete: () => socket.emit('move', { x: pointer.x, y: pointer.y })
         });
       });
     }

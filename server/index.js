@@ -34,19 +34,12 @@ io.on('connection', async (socket) => {
     socket.currentSystem = systemId;
 
     const player = await Player.findById(socket.playerId);
-    // Update player's position in DB if needed (e.g., default to center)
     if (!player.ship.position.systemId || player.ship.position.systemId !== systemId) {
-      player.ship.position = { systemId, x: 400, y: 300 }; // Center for new enter
+      player.ship.position = { systemId, x: 400, y: 300 };
       await player.save();
     }
 
-    // Send system data to joiner (including own pos)
-    socket.emit('systemData', { id: systemId, myPos: { x: player.ship.position.x, y: player.ship.position.y } });
-
-    // Broadcast entry to others, with pos
-    socket.to(systemId).emit('playerEntered', { id: socket.playerId, x: player.ship.position.x, y: player.ship.position.y });
-
-    // Send existing players to new joiner
+    // Send to joiner: Own pos and full list of existing players' states
     const existingPlayers = [];
     for (let s of Object.values(io.sockets.sockets)) {
       if (s.currentSystem === systemId && s.playerId !== socket.playerId) {
@@ -54,7 +47,19 @@ io.on('connection', async (socket) => {
         existingPlayers.push({ id: s.playerId, x: existingPlayer.ship.position.x, y: existingPlayer.ship.position.y });
       }
     }
-    socket.emit('existingPlayers', existingPlayers);
+    socket.emit('systemData', {
+      id: systemId,
+      myPos: { x: player.ship.position.x, y: player.ship.position.y },
+      existingPlayers
+    });
+
+    // Broadcast new player to others, with pos
+    socket.to(systemId).emit('playerEntered', { id: socket.playerId, x: player.ship.position.x, y: player.ship.position.y });
+  });
+
+  // Add 'startMove' for during animation (client emits this on tween start)
+  socket.on('startMove', ({ targetX, targetY }) => {
+    socket.to(socket.currentSystem).emit('playerStartMove', { id: socket.playerId, targetX, targetY });
   });
   socket.on('move', async ({ x, y }) => {
     const player = await Player.findById(socket.playerId);
