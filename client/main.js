@@ -90,6 +90,7 @@ function initGame() {
 
     create() {
       this.otherShips = new Map();
+      let isMoving = false; // Flag to prevent multiple moves
 
       // Background
       this.add.image(400, 300, 'stars').setOrigin(0.5);
@@ -105,6 +106,9 @@ function initGame() {
           if (!this.otherShips.has(p.id)) {
             const otherShip = this.add.sprite(p.x, p.y, 'destroyer').setScale(0.5);
             this.otherShips.set(p.id, otherShip);
+          } else {
+            // Update position if already exists (rare)
+            this.otherShips.get(p.id).setPosition(p.x, p.y);
           }
         });
       });
@@ -139,23 +143,47 @@ function initGame() {
         }
       });
 
-      // Tap to move (time-based tween)
-      this.input.on('pointerdown', (pointer) => {
-        socket.emit('startMove', { targetX: pointer.x, targetY: pointer.y }); // Predict for others
+      // Remove ships when players leave
+      socket.on('playerLeft', (data) => {
+        const otherShip = this.otherShips.get(data.id);
+        if (otherShip) {
+          otherShip.destroy();
+          this.otherShips.delete(data.id);
+        }
+      });
+
+      // Tap to move (time-based tween) - use pointerup for accurate clicks
+      this.input.on('pointerup', (pointer) => {
+        if (isMoving) return; // Ignore if already moving
+        isMoving = true;
+        socket.emit('startMove', { targetX: pointer.x, targetY: pointer.y });
         const duration = Phaser.Math.Distance.Between(this.playerShip.x, this.playerShip.y, pointer.x, pointer.y) * 5;
         this.tweens.add({
           targets: this.playerShip,
           x: pointer.x,
           y: pointer.y,
           duration: duration,
-          onComplete: () => socket.emit('move', { x: pointer.x, y: pointer.y })
+          onComplete: () => {
+            socket.emit('move', { x: pointer.x, y: pointer.y });
+            isMoving = false; // Reset for next move
+          }
         });
+      });
+
+      // Ignore pointermove to prevent ghosting
+      this.input.on('pointermove', (pointer) => {
+        if (isMoving) pointer.event.preventDefault(); // Block during move
       });
     }
 
     shutdown() {
       this.otherShips.forEach(ship => ship.destroy());
       this.otherShips.clear();
+      socket.off('playerEntered');
+      socket.off('playerMoved');
+      socket.off('playerStartMove');
+      socket.off('playerLeft');
+      socket.off('systemData');
     }
   }
 

@@ -29,31 +29,33 @@ io.on('connection', async (socket) => {
   const player = await Player.findById(socket.playerId);
 
   socket.on('joinSystem', async (systemId) => {
-    if (socket.currentSystem) socket.leave(socket.currentSystem);
+    if (socket.currentSystem) {
+      socket.to(socket.currentSystem).emit('playerLeft', { id: socket.playerId });
+      socket.leave(socket.currentSystem);
+    }
     socket.join(systemId);
     socket.currentSystem = systemId;
 
     const player = await Player.findById(socket.playerId);
-    if (!player.ship.position.systemId || player.ship.position.systemId !== systemId) {
+    if (!player.ship.position || player.ship.position.systemId !== systemId) {
       player.ship.position = { systemId, x: 400, y: 300 };
       await player.save();
     }
 
-    // Send to joiner: Own pos and full list of existing players' states
+    // Fetch existing players with positions
     const existingPlayers = [];
-    for (let s of Object.values(io.sockets.sockets)) {
-      if (s.currentSystem === systemId && s.playerId !== socket.playerId) {
+    const socketsInRoom = await io.in(systemId).fetchSockets();
+    for (let s of socketsInRoom) {
+      if (s.playerId !== socket.playerId) {
         const existingPlayer = await Player.findById(s.playerId);
         existingPlayers.push({ id: s.playerId, x: existingPlayer.ship.position.x, y: existingPlayer.ship.position.y });
       }
     }
-    socket.emit('systemData', {
-      id: systemId,
-      myPos: { x: player.ship.position.x, y: player.ship.position.y },
-      existingPlayers
-    });
 
-    // Broadcast new player to others, with pos
+    // Send to new joiner
+    socket.emit('systemData', { id: systemId, myPos: { x: player.ship.position.x, y: player.ship.position.y }, existingPlayers });
+
+    // Broadcast new player to others
     socket.to(systemId).emit('playerEntered', { id: socket.playerId, x: player.ship.position.x, y: player.ship.position.y });
   });
 
@@ -63,10 +65,12 @@ io.on('connection', async (socket) => {
   });
   socket.on('move', async ({ x, y }) => {
     const player = await Player.findById(socket.playerId);
-    player.ship.position.x = x;
-    player.ship.position.y = y;
-    await player.save();
-    socket.to(socket.currentSystem).emit('playerMoved', { id: socket.playerId, x, y });
+    if (player) {
+      player.ship.position.x = x;
+      player.ship.position.y = y;
+      await player.save();
+      socket.to(socket.currentSystem).emit('playerMoved', { id: socket.playerId, x, y });
+    }
   });
 
   // Join alliance room if player is in one
@@ -103,42 +107,45 @@ io.on('connection', async (socket) => {
   }
 
   socket.on('disconnect', () => {
-  console.log('Player disconnected:', socket.playerId);
-  onlineUsers.delete(socket.playerId); // Remove from online map
-});
+    console.log('Player disconnected:', socket.playerId);
+    if (socket.currentSystem) {
+      socket.to(socket.currentSystem).emit('playerLeft', { id: socket.playerId });
+    }
+    onlineUsers.delete(socket.playerId);
+  });
 
   // Send chat message
-socket.on('sendChat', async (data) => {
-  const { type, message, to, alliance } = data; // 'to' for DM, 'alliance' for alliance chat
-  const from = player.username;
+  socket.on('sendChat', async (data) => {
+    const { type, message, to, alliance } = data; // 'to' for DM, 'alliance' for alliance chat
+    const from = player.username;
 
-  const chatMsg = new ChatMessage({ type, from, message, timestamp: new Date() });
-  if (type === 'alliance') chatMsg.alliance = player.alliance;
-  if (type === 'dm') chatMsg.to = to;
+    const chatMsg = new ChatMessage({ type, from, message, timestamp: new Date() });
+    if (type === 'alliance') chatMsg.alliance = player.alliance;
+    if (type === 'dm') chatMsg.to = to;
 
-  await chatMsg.save();
+    await chatMsg.save();
 
-  if (type === 'global') {
-    io.emit('newChat', { type: 'global', from, message });
-  } else if (type === 'alliance' && player.alliance) {
-    io.to(`alliance_${player.alliance}`).emit('newChat', { type: 'alliance', from, message });
-    // Join alliance room on connect (add earlier: socket.join(`alliance_${player.alliance}`);)
-  } else if (type === 'dm') {
-  // Find receiver's player doc to get ID
-  const receiver = await Player.findOne({ username: to });
-  if (!receiver) return; // Invalid recipient
-  const receiverId = receiver._id.toString();
+    if (type === 'global') {
+      io.emit('newChat', { type: 'global', from, message });
+    } else if (type === 'alliance' && player.alliance) {
+      io.to(`alliance_${player.alliance}`).emit('newChat', { type: 'alliance', from, message });
+      // Join alliance room on connect (add earlier: socket.join(`alliance_${player.alliance}`);)
+    } else if (type === 'dm') {
+      // Find receiver's player doc to get ID
+      const receiver = await Player.findOne({ username: to });
+      if (!receiver) return; // Invalid recipient
+      const receiverId = receiver._id.toString();
 
-  // Emit to sender
-  socket.emit('newChat', { type: 'dm', from, to, message });
+      // Emit to sender
+      socket.emit('newChat', { type: 'dm', from, to, message });
 
-  // Emit to receiver if online
-  const receiverSocket = onlineUsers.get(receiverId);
-  if (receiverSocket) {
-    receiverSocket.emit('newChat', { type: 'dm', from, to: receiver.username, message });
-  }
-}
-});
+      // Emit to receiver if online
+      const receiverSocket = onlineUsers.get(receiverId);
+      if (receiverSocket) {
+        receiverSocket.emit('newChat', { type: 'dm', from, to: receiver.username, message });
+      }
+    }
+  });
 });
 
 app.use(cors());
