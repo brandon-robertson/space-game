@@ -40,6 +40,7 @@ function initGame() {
   });
 
   socket.on('connect_error', (err) => {
+    alert('Connection error: ' + err.message); // Show alert on connect error
     console.error('Socket connect error:', err.message); // For debugging
   });
 
@@ -116,22 +117,21 @@ function initGame() {
       this.playerShip = this.add.sprite(400, 300, 'destroyer').setScale(0.1).setInteractive();
       this.playerShip.setDepth(1);
 
-      // Updated health bar function: draws both shield and armor bars
+      // Health bar function
       function updateHealthBar(bar, x, y, shield, armor) {
         bar.clear();
         bar.fillStyle(0x00ff00, 1);
-        bar.fillRect(x - 25, y - 10, 50 * (shield / 100), 5); // Green for shield
+        bar.fillRect(x - 25, y - 30, 50 * (shield / 100), 5); // Green for shield, positioned above
         bar.fillStyle(0xff0000, 1);
-        bar.fillRect(x - 25, y - 5, 50 * (armor / 100), 5); // Red for armor
+        bar.fillRect(x - 25, y - 25, 50 * (armor / 100), 5); // Red for armor, positioned above
       }
 
       this.playerHealthBar = this.add.graphics();
-      updateHealthBar(this.playerHealthBar, this.playerShip.x, this.playerShip.y, 100, 100); // Defaults
+      updateHealthBar(this.playerHealthBar, this.playerShip.x, this.playerShip.y, 100, 100);
 
-      // Update health bar position each frame for player
+      // Update health bar position each frame for player and others
       this.events.on('update', () => {
-        updateHealthBar(this.playerHealthBar, this.playerShip.x, this.playerShip.y, 100, 100); // Replace with actual stats
-        // Update all other ships' health bars as well
+        updateHealthBar(this.playerHealthBar, this.playerShip.x, this.playerShip.y, 100, 100);
         this.otherShips.forEach((ship) => {
           updateHealthBar(
             ship.healthBar,
@@ -146,10 +146,10 @@ function initGame() {
       // System data (set own pos and create existing)
       socket.on('systemData', (data) => {
         this.playerShip.setPosition(data.myPos.x, data.myPos.y);
-        updateHealthBar(this.playerHealthBar, this.playerShip.x, this.playerShip.y, 100, 100); // Replace with actual stats
+        updateHealthBar(this.playerHealthBar, this.playerShip.x, this.playerShip.y, 100, 100);
         data.existingPlayers.forEach(p => {
           if (!this.otherShips.has(p.id)) {
-            const otherShip = this.add.sprite(p.x, p.y, 'destroyer').setScale(0.3);
+            const otherShip = this.add.sprite(p.x, p.y, 'destroyer').setScale(0.1);
             otherShip.healthBar = this.add.graphics();
             updateHealthBar(otherShip.healthBar, p.x, p.y, p.shield || 100, p.armor || 100);
             this.otherShips.set(p.id, otherShip);
@@ -158,14 +158,42 @@ function initGame() {
         // Mining nodes
         data.resources.forEach(r => {
           const node = this.add.circle(r.position.x, r.position.y, 30, 0xffff00).setInteractive();
-          node.on('pointerdown', () => socket.emit('startMining', { nodeId: r.id }));
+          node.on('pointerdown', () => {
+            socket.emit('startMining', { nodeId: r.id });
+            // Start local mining progress bar
+            const progressBar = this.add.graphics();
+            progressBar.fillStyle(0x00ff00, 1);
+            progressBar.fillRect(r.position.x - 25, r.position.y - 40, 0, 5); // Initial empty
+
+            // Phaser timer event for 10s mining
+            const timer = this.time.addEvent({
+              delay: 10000,
+              callback: () => {
+                progressBar.destroy();
+              },
+              loop: false
+            });
+
+            // Progress bar update on each frame
+            const updateProgress = () => {
+              if (!progressBar.scene) return; // If destroyed, stop
+              const progress = 1 - (timer.getRemaining() / 10000);
+              progressBar.clear();
+              progressBar.fillStyle(0x00ff00, 1);
+              progressBar.fillRect(r.position.x - 25, r.position.y - 40, 50 * progress, 5);
+              if (progress < 1) {
+                progressBar.scene.time.delayedCall(16, updateProgress); // ~60fps
+              }
+            };
+            updateProgress();
+          });
         });
       });
 
       // Player entered
       socket.on('playerEntered', (data) => {
         if (!this.otherShips.has(data.id)) {
-          const otherShip = this.add.sprite(data.x, data.y, 'destroyer').setScale(0.3);
+          const otherShip = this.add.sprite(data.x, data.y, 'destroyer').setScale(0.1);
           otherShip.healthBar = this.add.graphics();
           updateHealthBar(otherShip.healthBar, data.x, data.y, data.shield || 100, data.armor || 100);
           this.otherShips.set(data.id, otherShip);
@@ -174,7 +202,6 @@ function initGame() {
 
       // Player start move
       socket.on('playerStartMove', (data) => {
-        console.log('Received playerStartMove:', data);
         const otherShip = this.otherShips.get(data.id);
         if (otherShip) {
           const duration = Phaser.Math.Distance.Between(otherShip.x, otherShip.y, data.targetX, data.targetY) * 5;
@@ -206,6 +233,7 @@ function initGame() {
       socket.on('playerLeft', (data) => {
         const otherShip = this.otherShips.get(data.id);
         if (otherShip) {
+          otherShip.healthBar.destroy();
           otherShip.destroy();
           this.otherShips.delete(data.id);
         }
@@ -220,8 +248,8 @@ function initGame() {
 
       this.input.on('pointerup', (pointer) => {
         const dist = Phaser.Math.Distance.Between(downX, downY, pointer.x, pointer.y);
-        if (dist < 5) { // Only allow if not a drag
-          socket.emit('startMove', { targetX: downX, targetY: downY }); // Use pointerdown coords!
+        if (dist < 5) {
+          socket.emit('startMove', { targetX: downX, targetY: downY });
           const duration = Phaser.Math.Distance.Between(this.playerShip.x, this.playerShip.y, downX, downY) * 5;
           this.tweens.add({
             targets: this.playerShip,
@@ -231,7 +259,42 @@ function initGame() {
             onComplete: () => socket.emit('move', { x: downX, y: downY })
           });
         }
-        // Ignore if mouse moved (drag/ghost prevention)
+      });
+
+      // Attack on ship click
+      this.input.on('gameobjectdown', (pointer, gameObject) => {
+        console.log('Clicked game object:', gameObject.id); // Log to confirm click
+        if (this.otherShips.has(gameObject.id)) {
+          this.selectedTarget = gameObject.id;
+          socket.emit('attack', { targetId: this.selectedTarget });
+          console.log('Emitting attack on target:', this.selectedTarget); // Log emit
+        } else {
+          console.log('No valid target for attack');
+        }
+      });
+
+      // Handle attacked event and update health bars
+      socket.on('attacked', (data) => {
+        console.log('Received attacked:', data); // Log for debug
+        const ship = data.targetId === socket.id ? this.playerShip : this.otherShips.get(data.targetId);
+        if (ship) {
+          ship.shield = (ship.shield || 100) - data.damage;
+          if (ship.shield < 0) {
+            ship.armor = (ship.armor || 100) + ship.shield;
+            ship.shield = 0;
+            if (ship.armor <= 0) {
+              // Handle destruction
+              console.log('Ship destroyed');
+            }
+          }
+          updateHealthBar(ship.healthBar, ship.x, ship.y, ship.shield, ship.armor);
+        }
+      });
+
+      // Handle destroyed event for player
+      socket.on('destroyed', () => {
+        alert('Your ship was destroyed! Respawning in safe zone.');
+        // Optionally reload scene or move player
       });
     }
 
@@ -243,6 +306,8 @@ function initGame() {
       socket.off('playerStartMove');
       socket.off('playerLeft');
       socket.off('systemData');
+      socket.off('attacked');
+      socket.off('destroyed');
     }
   }
 

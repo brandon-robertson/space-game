@@ -189,37 +189,82 @@ io.on('connection', async (socket) => {
       const database = client.db(mongoose.connection.db.databaseName);
       const collection = database.collection('systems');
       const systemDoc = await collection.findOne({ id: socket.currentSystem });
-      const node = systemDoc.resources.find(r => r.id === nodeId && r.active);
-      if (node) {
-        // Simulate mining time
+      const nodeIndex = systemDoc.resources.findIndex(r => r.id === nodeId && r.active);
+      if (nodeIndex !== -1) {
+        // Simulate 10s mining
         setTimeout(async () => {
-          const miningClient = new MongoClient(process.env.MONGO_URI); // Reconnect for timeout
+          const miningClient = new MongoClient(process.env.MONGO_URI);
           try {
             await miningClient.connect();
             const miningDatabase = miningClient.db(mongoose.connection.db.databaseName);
             const miningCollection = miningDatabase.collection('systems');
-            await miningCollection.updateOne(
-              { id: socket.currentSystem, "resources.id": nodeId },
-              { $set: { "resources.$.active": false } }
+            const updateResult = await miningCollection.updateOne(
+              { id: socket.currentSystem },
+              { $set: { [`resources.${nodeIndex}.active`]: false } }
             );
-            const player = await Player.findById(socket.playerId);
-            player.minerals += node.yield;
-            player.ship.stats.cargo += node.yield;
-            await player.save();
-            socket.emit('miningComplete', { minerals: node.yield });
-            socket.to(socket.currentSystem).emit('nodeDepleted', { nodeId });
-            console.log('Mining complete for nodeId:', nodeId);
+            if (updateResult.modifiedCount > 0) {
+              const player = await Player.findById(socket.playerId);
+              player.minerals += systemDoc.resources[nodeIndex].yield;
+              player.ship.stats.cargo += systemDoc.resources[nodeIndex].yield;
+              await player.save();
+              socket.emit('miningComplete', { minerals: systemDoc.resources[nodeIndex].yield });
+              socket.to(socket.currentSystem).emit('nodeDepleted', { nodeId });
+              console.log('Mining complete for nodeId:', nodeId);
+            }
           } catch (err) {
             console.error('Mining update error:', err);
           } finally {
             await miningClient.close();
           }
-        }, 10000); // 10 seconds
+        }, 10000);
       }
     } catch (err) {
       console.error('Mining error:', err);
     } finally {
       await client.close();
+    }
+  });
+
+  // --- Attack Handler ---
+  socket.on('attack', async ({ targetId }) => {
+    console.log('Received attack from', socket.playerId, 'on', targetId);
+    const attacker = await Player.findById(socket.playerId);
+    const target = await Player.findById(targetId);
+    if (target && attacker.ship.position.systemId === target.ship.position.systemId) {
+      const dist = Math.hypot(attacker.ship.position.x - target.ship.position.x, attacker.ship.position.y - target.ship.position.y);
+      if (dist < 200) { // Example range check
+        const weapon = attacker.ship.weapons[0] || { cooldown: 5, lastFired: new Date(0) };
+        const now = new Date();
+        if (now - weapon.lastFired > weapon.cooldown * 1000) {
+          const damage = 20;
+          target.ship.stats.shield -= damage;
+          if (target.ship.stats.shield < 0) {
+            target.ship.stats.armor += target.ship.stats.shield;
+            target.ship.stats.shield = 0;
+            if (target.ship.stats.armor <= 0) {
+              target.ship.stats.armor = 100;
+              target.ship.stats.shield = 100;
+              target.ship.position = { systemId: '1', x: 400, y: 300 };
+              await target.save();
+              const targetSocket = onlineUsers.get(targetId);
+              if (targetSocket) targetSocket.emit('destroyed');
+              console.log('Target destroyed:', targetId);
+              return;
+            }
+          }
+          await target.save();
+          weapon.lastFired = now;
+          await attacker.save();
+          io.to(socket.currentSystem).emit('attacked', { attackerId: socket.playerId, targetId, damage });
+          console.log('Attack applied, damage:', damage);
+        } else {
+          console.log('Weapon on cooldown for', socket.playerId);
+        }
+      } else {
+        console.log('Target out of range for', socket.playerId);
+      }
+    } else {
+      console.log('Invalid attack target or range');
     }
   });
 
