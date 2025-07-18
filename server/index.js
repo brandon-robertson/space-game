@@ -11,6 +11,7 @@ const Player = require('./models/Player');
 const ChatMessage = require('./models/ChatMessage');
 const { MongoClient } = require('mongodb');
 const onlineUsers = new Map();
+const attackLocks = new Map(); // playerId: timestamp
 
 const app = express();
 const server = http.createServer(app);
@@ -41,10 +42,13 @@ io.use((socket, next) => {
 
 io.on('connection', async (socket) => {
   console.log('Player connected:', socket.playerId);
+  onlineUsers.set(socket.playerId, socket); // Fix
   const player = await Player.findById(socket.playerId);
 
-  // --- Chat History Loading with Logging ---
+  socket.emit('playerInfo', { playerId: socket.playerId }); // Send your _id to client
+  console.log('Sent playerInfo with id:', socket.playerId);
 
+  // --- Chat History Loading with Logging ---
   // Global: Last 50 global messages
   const globalHistory = await ChatMessage.find({ type: 'global' }).sort({ timestamp: -1 }).limit(50);
   socket.emit('chatHistory', { type: 'global', messages: globalHistory.reverse() });
@@ -85,6 +89,8 @@ io.on('connection', async (socket) => {
     const player = await Player.findById(socket.playerId);
     if (!player.ship.position || player.ship.position.systemId !== systemId) {
       player.ship.position = { systemId, x: 400, y: 300 };
+      player.ship.stats.shield = 100;
+      player.ship.stats.armor = 100;
       await player.save();
     }
 
@@ -118,6 +124,11 @@ io.on('connection', async (socket) => {
           console.log('Updated system document:', JSON.stringify(systemDoc, null, 2));
         }
       }
+
+      // Force reset for testing
+      await collection.updateOne({ id: systemId }, { $set: { 'resources.$[].active': true } });
+      systemDoc = await collection.findOne({ id: systemId });
+      console.log('Forced node reset to active for testing');
 
       // Fetch existing players
       const existingPlayers = [];
@@ -182,7 +193,9 @@ io.on('connection', async (socket) => {
     }
   });
 
+  // --- Mining Handler ---
   socket.on('startMining', async ({ nodeId }) => {
+    console.log('Received startMining request for nodeId:', nodeId, 'in system:', socket.currentSystem); // Debug log
     const client = new MongoClient(process.env.MONGO_URI);
     try {
       await client.connect();
@@ -190,9 +203,14 @@ io.on('connection', async (socket) => {
       const collection = database.collection('systems');
       const systemDoc = await collection.findOne({ id: socket.currentSystem });
       const nodeIndex = systemDoc.resources.findIndex(r => r.id === nodeId && r.active);
+      console.log('Node found? Index:', nodeIndex); // Debug log
+      if (nodeIndex === -1) {
+        console.log('Node inactive or not found');
+      }
       if (nodeIndex !== -1) {
         // Simulate 10s mining
         setTimeout(async () => {
+          console.log('Processing mining complete for nodeId:', nodeId); // Debug log
           const miningClient = new MongoClient(process.env.MONGO_URI);
           try {
             await miningClient.connect();
@@ -227,38 +245,57 @@ io.on('connection', async (socket) => {
 
   // --- Attack Handler ---
   socket.on('attack', async ({ targetId }) => {
-    console.log('Received attack from', socket.playerId, 'on', targetId);
+    console.log('Received attack request from', socket.playerId, 'on target', targetId); // Debug log
     const attacker = await Player.findById(socket.playerId);
     const target = await Player.findById(targetId);
+    const lockTime = attackLocks.get(socket.playerId) || 0;
+    if (Date.now() - lockTime < 1000) { // Anti-spam 1s
+      console.log('Attack spam detected for', socket.playerId);
+      return;
+    }
+    attackLocks.set(socket.playerId, Date.now());
     if (target && attacker.ship.position.systemId === target.ship.position.systemId) {
       const dist = Math.hypot(attacker.ship.position.x - target.ship.position.x, attacker.ship.position.y - target.ship.position.y);
-      if (dist < 200) { // Example range check
+      if (dist < 250) { // Match client/server attack
         const weapon = attacker.ship.weapons[0] || { cooldown: 5, lastFired: new Date(0) };
         const now = new Date();
+        if (now - weapon.lastFired < 1000) { // Anti-spam 1s min
+          console.log('Attack spam detected for', socket.playerId);
+          return;
+        }
         if (now - weapon.lastFired > weapon.cooldown * 1000) {
-          const damage = 20;
+
+          const damage = 30;// Reduce to 5 to prevent insta-destroy
           target.ship.stats.shield -= damage;
           if (target.ship.stats.shield < 0) {
-            target.ship.stats.armor += target.ship.stats.shield;
+            target.ship.stats.armor += target.ship.stats.shield; // Overflow negative to armor
             target.ship.stats.shield = 0;
-            if (target.ship.stats.armor <= 0) {
-              target.ship.stats.armor = 100;
-              target.ship.stats.shield = 100;
-              target.ship.position = { systemId: '1', x: 400, y: 300 };
-              await target.save();
-              const targetSocket = onlineUsers.get(targetId);
-              if (targetSocket) targetSocket.emit('destroyed');
-              console.log('Target destroyed:', targetId);
-              return;
-            }
+          }
+          if (target.ship.stats.armor <= 0) {
+            target.ship.stats.armor = 0;
+            target.ship.stats.shield = 0; // Keep 0 on destroy
+            target.ship.position = { systemId: '1', x: 400, y: 300 };
+            await target.save();
+            const targetSocket = onlineUsers.get(targetId);
+            if (targetSocket) targetSocket.emit('destroyed');
+            io.to(socket.currentSystem).emit('playerDestroyed', { id: targetId });
+            console.log('Target destroyed:', targetId);
+            return;
           }
           await target.save();
           weapon.lastFired = now;
           await attacker.save();
-          io.to(socket.currentSystem).emit('attacked', { attackerId: socket.playerId, targetId, damage });
-          console.log('Attack applied, damage:', damage);
+          io.to(socket.currentSystem).emit('attacked', {
+            attackerId: socket.playerId,
+            targetId,
+            damage,
+            targetShield: target.ship.stats.shield,
+            targetArmor: target.ship.stats.armor
+          });
+          console.log('Attack applied, damage:', damage, 'shield:', target.ship.stats.shield, 'armor:', target.ship.stats.armor);
         } else {
           console.log('Weapon on cooldown for', socket.playerId);
+          socket.emit('attackError', { message: 'Weapon on cooldown!' });
         }
       } else {
         console.log('Target out of range for', socket.playerId);
@@ -272,17 +309,48 @@ io.on('connection', async (socket) => {
     console.log('Broadcasting startMove for player:', socket.playerId, { targetX, targetY });
     socket.to(socket.currentSystem).emit('playerStartMove', { id: socket.playerId, targetX, targetY });
   });
+
+  // Mining node global regen timer (for testing, resets every 1 min)
+  // Note: For production, move this outside io.on('connection') to avoid duplicate intervals!
+  const regenInterval = setInterval(async () => {
+    const client = new MongoClient(process.env.MONGO_URI);
+    try {
+      await client.connect();
+      const db = client.db(mongoose.connection.db.databaseName);
+      await db.collection('systems').updateMany({}, { $set: { 'resources.$[].active': true } });
+      console.log('Reset all mining nodes to active');
+    } catch (err) {
+      console.error('Node regen error:', err);
+    } finally {
+      await client.close();
+    }
+  }, 60000); // 1 min for testing
+
+  socket.on('disconnect', () => {
+    clearInterval(regenInterval); // Clean up interval per socket
+  });
 });
 
 app.use(cors());
 app.use(express.json());
 
-// Connect to MongoDB
-mongoose.connect(process.env.MONGO_URI || 'mongodb://localhost:27017/test', {
-  useNewUrlParser: true,
-  useUnifiedTopology: true
-})
-  .then(() => console.log('Connected to MongoDB'))
+// Connect to MongoDB and check/create index
+mongoose.connect(process.env.MONGO_URI || 'mongodb://localhost:27017/test')
+  .then(() => {
+    console.log('Connected to MongoDB');
+    const db = mongoose.connection.db;
+    db.collection('systems').indexInformation()
+      .then(indexes => {
+        if (!indexes.id_1) {  // Check if 'id_1' key exists
+          db.collection('systems').createIndex({ id: 1 }, { unique: true, name: 'id_1' })
+            .then(() => console.log('Created index on systems.id'))
+            .catch(err => console.error('Index creation error:', err));
+        } else {
+          console.log('Index on systems.id already exists - skipping creation');
+        }
+      })
+      .catch(err => console.error('Error checking indexes:', err));
+  })
   .catch(err => console.error('DB connection error:', err));
 
 // Basic route to test

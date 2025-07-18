@@ -1,5 +1,121 @@
+This file is a merged representation of a subset of the codebase, containing specifically included files, combined into a single document by Repomix.
+
+================================================================
+File Summary
+================================================================
+
+Purpose:
+--------
+This file contains a packed representation of a subset of the repository's contents that is considered the most important context.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+
+File Format:
+------------
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  a. A separator line (================)
+  b. The file path (File: path/to/file)
+  c. Another separator line
+  d. The full contents of the file
+  e. A blank line
+
+Usage Guidelines:
+-----------------
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+
+Notes:
+------
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Only files matching these patterns are included: client
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+
+
+================================================================
+Directory Structure
+================================================================
+client/
+  index.html
+  main.js
+  package.json
+
+================================================================
+Files
+================================================================
+
+================
+File: client/package.json
+================
+{
+  "name": "client",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "phaser": "^3.90.0",
+    "socket.io-client": "^4.8.1"
+  }
+}
+
+================
+File: client/index.html
+================
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Space Game</title>
+  <script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/socket.io-client@4.7.5/dist/socket.io.min.js"></script>
+  <style>
+    body { margin: 0; background: black; color: white; font-family: Arial; }
+    #login { position: absolute; top: 20px; left: 20px; z-index: 10; }
+    #chat { position: absolute; bottom: 20px; left: 20px; width: 300px; height: 200px; background: rgba(0,0,0,0.8); padding: 10px; z-index: 10; display: none; }
+    #messages { height: 150px; overflow-y: scroll; }
+    #chat input { width: 200px; }
+    #game-container { display: none; }
+  </style>
+</head>
+<body>
+  <div id="login">
+    <input id="username" placeholder="Username" />
+    <input id="password" type="password" placeholder="Password" />
+    <button onclick="register()">Register</button>
+    <button onclick="login()">Login</button>
+  </div>
+  <div id="chat">
+    <div id="messages"></div>
+    <input id="message" placeholder="Type message..." />
+    <button onclick="sendGlobalChat()">Send Global</button>
+    <!-- Add buttons for alliance/DM later -->
+  </div>
+  <div id="game-container"></div>
+  <script src="main.js"></script>
+</body>
+</html>
+
+================
+File: client/main.js
+================
 let socket; // Make socket global
-let myPlayerId; // Global var for your _id
 
 function register() {
   const username = document.getElementById('username').value;
@@ -47,12 +163,6 @@ function initGame() {
 
   socket.on('connect', () => {
     console.log('Socket connected successfully');
-    // Fetch your playerId from server - add API route later, but for now assume sent on connect
-  });
-
-  socket.on('playerInfo', (data) => {
-    myPlayerId = data.playerId;
-    console.log('Received myPlayerId:', myPlayerId);
   });
 
   // Moved Phaser code inside initGame
@@ -122,18 +232,15 @@ function initGame() {
 
       // Player ship
       this.playerShip = this.add.sprite(400, 300, 'destroyer').setScale(0.1).setInteractive();
-      this.playerShip.isOwnShip = true; // Flag to identify own ship - no
       this.playerShip.setDepth(1);
 
       // Health bar function
       function updateHealthBar(bar, x, y, shield, armor) {
         bar.clear();
-        shield = Math.max(shield, 0); // Min 0, no upper clamp needed if server caps
-        armor = Math.max(armor, 0);
         bar.fillStyle(0x00ff00, 1);
-        bar.fillRect(x - 25, y - 30, 50 * (shield / 100), 5);
+        bar.fillRect(x - 25, y - 30, 50 * (shield / 100), 5); // Green for shield, positioned above
         bar.fillStyle(0xff0000, 1);
-        bar.fillRect(x - 25, y - 25, 50 * (armor / 100), 5);
+        bar.fillRect(x - 25, y - 25, 50 * (armor / 100), 5); // Red for armor, positioned above
       }
 
       this.playerHealthBar = this.add.graphics();
@@ -159,66 +266,54 @@ function initGame() {
         updateHealthBar(this.playerHealthBar, this.playerShip.x, this.playerShip.y, 100, 100);
         data.existingPlayers.forEach(p => {
           if (!this.otherShips.has(p.id)) {
-            const otherShip = this.add.sprite(p.x, p.y, 'destroyer').setScale(0.1).setInteractive();
-            otherShip.playerId = p.id; // Ensure set
-            otherShip.shield = 100;
-            otherShip.armor = 100;
+            const otherShip = this.add.sprite(p.x, p.y, 'destroyer').setScale(0.1);
             otherShip.healthBar = this.add.graphics();
-            updateHealthBar(otherShip.healthBar, p.x, p.y, otherShip.shield, otherShip.armor);
+            updateHealthBar(otherShip.healthBar, p.x, p.y, p.shield || 100, p.armor || 100);
             this.otherShips.set(p.id, otherShip);
-            console.log('Added other ship with playerId:', p.id); // Debug:
           }
         });
         // Mining nodes
         data.resources.forEach(r => {
-          console.log('Creating mining node:', r.id, 'active:', r.active);
-          let nodeColor = r.active ? 0xffff00 : 0x555555; // Yellow if active, gray if not
-          const node = this.add.circle(r.position.x, r.position.y, 30, nodeColor);
-          if (r.active) {
-            node.setInteractive();
-            node.on('pointerdown', () => {
-              console.log('Starting mining on active node:', r.id);
-              socket.emit('startMining', { nodeId: r.id });
-              // Progress bar code remains the same...
-              const progressBar = this.add.graphics();
-              progressBar.fillStyle(0x00ff00, 1);
-              progressBar.fillRect(r.position.x - 25, r.position.y - 40, 0, 5);
+          const node = this.add.circle(r.position.x, r.position.y, 30, 0xffff00).setInteractive();
+          node.on('pointerdown', () => {
+            socket.emit('startMining', { nodeId: r.id });
+            // Start local mining progress bar
+            const progressBar = this.add.graphics();
+            progressBar.fillStyle(0x00ff00, 1);
+            progressBar.fillRect(r.position.x - 25, r.position.y - 40, 0, 5); // Initial empty
 
-              const timer = this.time.addEvent({
-                delay: 10000,
-                callback: () => {
-                  progressBar.destroy();
-                },
-                loop: false
-              });
-
-              const updateProgress = () => {
-                if (!progressBar.scene) return;
-                const progress = 1 - (timer.getRemaining() / 10000);
-                progressBar.clear();
-                progressBar.fillStyle(0x00ff00, 1);
-                progressBar.fillRect(r.position.x - 25, r.position.y - 40, 50 * progress, 5);
-                if (progress < 1) {
-                  progressBar.scene.time.delayedCall(16, updateProgress);
-                }
-              };
-              updateProgress();
+            // Phaser timer event for 10s mining
+            const timer = this.time.addEvent({
+              delay: 10000,
+              callback: () => {
+                progressBar.destroy();
+              },
+              loop: false
             });
-          }
+
+            // Progress bar update on each frame
+            const updateProgress = () => {
+              if (!progressBar.scene) return; // If destroyed, stop
+              const progress = 1 - (timer.getRemaining() / 10000);
+              progressBar.clear();
+              progressBar.fillStyle(0x00ff00, 1);
+              progressBar.fillRect(r.position.x - 25, r.position.y - 40, 50 * progress, 5);
+              if (progress < 1) {
+                progressBar.scene.time.delayedCall(16, updateProgress); // ~60fps
+              }
+            };
+            updateProgress();
+          });
         });
       });
 
       // Player entered
       socket.on('playerEntered', (data) => {
         if (!this.otherShips.has(data.id)) {
-          const otherShip = this.add.sprite(data.x, data.y, 'destroyer').setScale(0.1).setInteractive();
-          otherShip.playerId = data.id;
-          otherShip.shield = 100;
-          otherShip.armor = 100;
+          const otherShip = this.add.sprite(data.x, data.y, 'destroyer').setScale(0.1);
           otherShip.healthBar = this.add.graphics();
-          updateHealthBar(otherShip.healthBar, data.x, data.y, otherShip.shield, otherShip.armor);
+          updateHealthBar(otherShip.healthBar, data.x, data.y, data.shield || 100, data.armor || 100);
           this.otherShips.set(data.id, otherShip);
-          console.log('Player entered: Added ship with playerId:', data.id);
         }
       });
 
@@ -261,19 +356,6 @@ function initGame() {
         }
       });
 
-      // Player destroyed
-      socket.on('playerDestroyed', (data) => {
-        const destroyedShip = this.otherShips.get(data.id);
-        if (destroyedShip) {
-          destroyedShip.healthBar.destroy();
-          destroyedShip.destroy();
-          this.otherShips.delete(data.id);
-          console.log('Removed destroyed ship:', data.id);
-        }
-      });
-
-      // If victim rejoins same system later, 'playerEntered'
-
       // Tap to move with drag filter
       let downX, downY;
       this.input.on('pointerdown', (pointer) => {
@@ -298,120 +380,38 @@ function initGame() {
 
       // Attack on ship click
       this.input.on('gameobjectdown', (pointer, gameObject) => {
-        console.log('Clicked game object:', gameObject.texture ? gameObject.texture.key : 'unknown', 'playerId:', gameObject.playerId, 'isOwnShip:', gameObject.isOwnShip);
-        if (gameObject.isOwnShip) {
-          console.log('Clicked own ship - ignoring attack');
-          return;
-        }
-        if (gameObject.playerId && this.otherShips.has(gameObject.playerId)) {
-          const now = Date.now();
-          if (this.isAttacking || now - this.lastClickTime < 500) {
-            console.log('Attack in progress or debounced - ignoring');
-            return;
-          }
-          this.lastClickTime = now;
-          if (now - this.attackCooldown < 5000) {
-            console.log('Attack on cooldown - ignoring (no move)');
-            alert('Weapon on cooldown!');
-            return;
-          }
-          this.isAttacking = true;
-          this.selectedTarget = gameObject.playerId;
-          const targetShip = this.otherShips.get(this.selectedTarget);
-          if (targetShip) {
-            const dx = targetShip.x - this.playerShip.x; // Fixed: target - player for towards
-            const dy = targetShip.y - this.playerShip.y;
-            const dist = Math.hypot(dx, dy);
-            console.log('Initial dist:', dist, 'Player pos:', this.playerShip.x, this.playerShip.y, 'Target pos:', targetShip.x, targetShip.y); // Debug pos
-            const attackRange = 250; // Match server, gap for sprites
-            if (dist > attackRange) {
-              const moveDist = dist - attackRange; // No buffer, stop at exact range
-              const normX = dx / dist;
-              const normY = dy / dist;
-              const stopX = this.playerShip.x + normX * moveDist;
-              const stopY = this.playerShip.y + normY * moveDist;
-              console.log('Stop point:', stopX, stopY, 'moveDist:', moveDist);
-              socket.emit('startMove', { targetX: stopX, targetY: stopY });
-              const duration = moveDist * 5;
-              this.tweens.add({
-                targets: this.playerShip,
-                x: stopX,
-                y: stopY,
-                duration: duration,
-                ease: 'Linear', // Exact movement, no acceleration overshoot
-                onComplete: () => {
-                  socket.emit('move', { x: stopX, y: stopY });
-                  this.time.delayedCall(200, () => {
-                    const newDx = targetShip.x - this.playerShip.x;
-                    const newDy = targetShip.y - this.playerShip.y;
-                    const newDist = Math.hypot(newDx, newDy);
-                    console.log('Delayed new dist:', newDist);
-                    if (newDist <= attackRange + 10) {
-                      socket.emit('attack', { targetId: this.selectedTarget });
-                      console.log('Moved to range and emitting attack on:', this.selectedTarget);
-                    } else {
-                      console.log('Target moved out of range after move - no attack', newDist);
-                      this.attackCooldown = now - 5000;
-                    }
-                    this.isAttacking = false;
-                  });
-                }
-              });
-            } else {
-              socket.emit('attack', { targetId: this.selectedTarget });
-              console.log('Already in range - Emitting attack on:', this.selectedTarget);
-              this.isAttacking = false;
-            }
-          } else {
-            this.isAttacking = false;
-            this.attackCooldown = now - 5000;
-          }
+        console.log('Clicked game object:', gameObject.id); // Log to confirm click
+        if (this.otherShips.has(gameObject.id)) {
+          this.selectedTarget = gameObject.id;
+          socket.emit('attack', { targetId: this.selectedTarget });
+          console.log('Emitting attack on target:', this.selectedTarget); // Log emit
         } else {
-          console.log('No valid target for attack - not in otherShips or no playerId');
+          console.log('No valid target for attack');
         }
       });
 
       // Handle attacked event and update health bars
       socket.on('attacked', (data) => {
-        console.log('Received attacked:', data);
-        const isOwn = data.targetId === myPlayerId;
-        const ship = isOwn ? this.playerShip : this.otherShips.get(data.targetId);
+        console.log('Received attacked:', data); // Log for debug
+        const ship = data.targetId === socket.id ? this.playerShip : this.otherShips.get(data.targetId);
         if (ship) {
-          ship.shield = data.targetShield;
-          ship.armor = data.targetArmor;
-          updateHealthBar(ship.healthBar, ship.x, ship.y, ship.shield, ship.armor);
-
-          const attackerShip = data.attackerId === myPlayerId ? this.playerShip : this.otherShips.get(data.attackerId);
-          if (attackerShip && ship) {
-            const beam = this.add.graphics();
-            beam.lineStyle(2, 0xff0000);
-            beam.strokeLineShape(new Phaser.Geom.Line(attackerShip.x, attackerShip.y, ship.x, ship.y));
-            this.time.delayedCall(500, () => beam.destroy());
+          ship.shield = (ship.shield || 100) - data.damage;
+          if (ship.shield < 0) {
+            ship.armor = (ship.armor || 100) + ship.shield;
+            ship.shield = 0;
+            if (ship.armor <= 0) {
+              // Handle destruction
+              console.log('Ship destroyed');
+            }
           }
-        } else {
-          console.log('Attacked ship not found - id:', data.targetId);
+          updateHealthBar(ship.healthBar, ship.x, ship.y, ship.shield, ship.armor);
         }
-        this.isAttacking = false; // Unlock after server
       });
 
       // Handle destroyed event for player
       socket.on('destroyed', () => {
         alert('Your ship was destroyed! Respawning in safe zone.');
-        this.playerShip.setPosition(400, 300); // Example safe pos
-        this.playerShip.shield = 100;
-        this.playerShip.armor = 100;
-        updateHealthBar(this.playerHealthBar, this.playerShip.x, this.playerShip.y, this.playerShip.shield, this.playerShip.armor);
-      });
-
-      socket.on('attackError', (data) => {
-        alert(data.message); // Or show
-        this.isAttacking = false; // Unlock on error
-        this.attackCooldown = Date.now() - 5000; // Reset if server rejects (e.g.,
-      });
-
-      socket.on('miningError', (data) => {
-        console.log('Mining error:', data.message);
-        alert('Mining error: ' + data.message);
+        // Optionally reload scene or move player
       });
     }
 
@@ -425,7 +425,6 @@ function initGame() {
       socket.off('systemData');
       socket.off('attacked');
       socket.off('destroyed');
-      socket.off('miningError');
     }
   }
 
@@ -459,12 +458,6 @@ function initGame() {
     alert('Mined ' + data.minerals + ' minerals!');
   });
 
-  socket.on('nodeDepleted', (data) => {
-    console.log('Node depleted:', data.nodeId);
-    // Find and gray out node - add node map if multiple
-    // (You can implement a node map to track and update visuals
-  });
-
   const game = new Phaser.Game(config);
 
   // Show game container after game starts
@@ -476,3 +469,10 @@ function sendGlobalChat() {
   socket.emit('sendChat', { type: 'global', message });
   document.getElementById('message').value = '';
 }
+
+
+
+
+================================================================
+End of Codebase
+================================================================
