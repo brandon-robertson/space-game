@@ -55,6 +55,7 @@ function initGame() {
 
     preload() {
       // Load backgrounds or node icons if needed
+      this.load.image('destroyer', 'assets/destroyer.png'); // Preload destroyer globally
     }
 
     create() {
@@ -102,7 +103,7 @@ function initGame() {
     }
 
     preload() {
-      this.load.image('destroyer', 'assets/destroyer.png');
+      // No need to load 'destroyer' again, loaded in GalaxyScene
     }
 
     create() {
@@ -115,32 +116,44 @@ function initGame() {
       this.playerShip = this.add.sprite(400, 300, 'destroyer').setScale(0.1).setInteractive();
       this.playerShip.setDepth(1);
 
-      // Health bar update function
+      // Updated health bar function: draws both shield and armor bars
       function updateHealthBar(bar, x, y, shield, armor) {
         bar.clear();
         bar.fillStyle(0x00ff00, 1);
-        bar.fillRect(x - 25, y, 50 * (shield / 100), 5); // Shield green
+        bar.fillRect(x - 25, y - 10, 50 * (shield / 100), 5); // Green for shield
         bar.fillStyle(0xff0000, 1);
-        bar.fillRect(x - 25, y + 6, 50 * (armor / 100), 5); // Armor red
+        bar.fillRect(x - 25, y - 5, 50 * (armor / 100), 5); // Red for armor
       }
 
       this.playerHealthBar = this.add.graphics();
-      updateHealthBar(this.playerHealthBar, this.playerShip.x, this.playerShip.y - 50, 100, 100); // Example full
+      updateHealthBar(this.playerHealthBar, this.playerShip.x, this.playerShip.y, 100, 100); // Defaults
 
-      // Update health bar position each frame
+      // Update health bar position each frame for player
       this.events.on('update', () => {
-        updateHealthBar(this.playerHealthBar, this.playerShip.x, this.playerShip.y - 50, 100, 100); // Replace with actual stats
+        updateHealthBar(this.playerHealthBar, this.playerShip.x, this.playerShip.y, 100, 100); // Replace with actual stats
+        // Update all other ships' health bars as well
+        this.otherShips.forEach((ship) => {
+          updateHealthBar(
+            ship.healthBar,
+            ship.x,
+            ship.y,
+            ship.shield || 100,
+            ship.armor || 100
+          );
+        });
       });
 
       // System data (set own pos and create existing)
       socket.on('systemData', (data) => {
         this.playerShip.setPosition(data.myPos.x, data.myPos.y);
-        updateHealthBar(this.playerHealthBar, this.playerShip.x, this.playerShip.y - 50, 100, 100); // Replace with actual stats
+        updateHealthBar(this.playerHealthBar, this.playerShip.x, this.playerShip.y, 100, 100); // Replace with actual stats
         data.existingPlayers.forEach(p => {
-          const otherShip = this.add.sprite(p.x, p.y, 'destroyer').setScale(0.1);
-          otherShip.healthBar = this.add.graphics();
-          updateHealthBar(otherShip.healthBar, p.x, p.y - 50, 100, 100); // Replace with actual stats
-          this.otherShips.set(p.id, otherShip);
+          if (!this.otherShips.has(p.id)) {
+            const otherShip = this.add.sprite(p.x, p.y, 'destroyer').setScale(0.3);
+            otherShip.healthBar = this.add.graphics();
+            updateHealthBar(otherShip.healthBar, p.x, p.y, p.shield || 100, p.armor || 100);
+            this.otherShips.set(p.id, otherShip);
+          }
         });
         // Mining nodes
         data.resources.forEach(r => {
@@ -151,14 +164,17 @@ function initGame() {
 
       // Player entered
       socket.on('playerEntered', (data) => {
-        const otherShip = this.add.sprite(data.x, data.y, 'destroyer').setScale(0.1);
-        otherShip.healthBar = this.add.graphics();
-        updateHealthBar(otherShip.healthBar, data.x, data.y - 50, 100, 100); // Replace with actual stats
-        this.otherShips.set(data.id, otherShip);
+        if (!this.otherShips.has(data.id)) {
+          const otherShip = this.add.sprite(data.x, data.y, 'destroyer').setScale(0.3);
+          otherShip.healthBar = this.add.graphics();
+          updateHealthBar(otherShip.healthBar, data.x, data.y, data.shield || 100, data.armor || 100);
+          this.otherShips.set(data.id, otherShip);
+        }
       });
 
       // Player start move
       socket.on('playerStartMove', (data) => {
+        console.log('Received playerStartMove:', data);
         const otherShip = this.otherShips.get(data.id);
         if (otherShip) {
           const duration = Phaser.Math.Distance.Between(otherShip.x, otherShip.y, data.targetX, data.targetY) * 5;
@@ -176,6 +192,13 @@ function initGame() {
         const otherShip = this.otherShips.get(data.id);
         if (otherShip) {
           otherShip.setPosition(data.x, data.y);
+          updateHealthBar(
+            otherShip.healthBar,
+            data.x,
+            data.y,
+            otherShip.shield || 100,
+            otherShip.armor || 100
+          );
         }
       });
 
@@ -235,6 +258,7 @@ function initGame() {
   socket.connect();
 
   socket.on('chatHistory', (data) => {
+    console.log('Received chatHistory:', data.type, data.messages.length, 'messages');
     const messagesDiv = document.getElementById('messages');
     data.messages.forEach(msg => {
       messagesDiv.innerHTML += `<p>[${data.type}] ${msg.from}: ${msg.message}</p>`;
@@ -245,6 +269,11 @@ function initGame() {
     const messagesDiv = document.getElementById('messages');
     messagesDiv.innerHTML += `<p>[${data.type}] ${data.from}: ${data.message}</p>`;
     messagesDiv.scrollTop = messagesDiv.scrollHeight;
+  });
+
+  socket.on('miningComplete', (data) => {
+    console.log('Mining complete:', data.minerals, 'minerals');
+    alert('Mined ' + data.minerals + ' minerals!');
   });
 
   const game = new Phaser.Game(config);

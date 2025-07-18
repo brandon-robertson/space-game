@@ -43,6 +43,37 @@ io.on('connection', async (socket) => {
   console.log('Player connected:', socket.playerId);
   const player = await Player.findById(socket.playerId);
 
+  // --- Chat History Loading with Logging ---
+
+  // Global: Last 50 global messages
+  const globalHistory = await ChatMessage.find({ type: 'global' }).sort({ timestamp: -1 }).limit(50);
+  socket.emit('chatHistory', { type: 'global', messages: globalHistory.reverse() });
+  console.log('Sent global chat history:', globalHistory.length, 'messages');
+
+  // Alliance: If in alliance, last 50
+  if (player.alliance) {
+    const allianceHistory = await ChatMessage.find({ type: 'alliance', alliance: player.alliance }).sort({ timestamp: -1 }).limit(50);
+    socket.emit('chatHistory', { type: 'alliance', messages: allianceHistory.reverse() });
+    console.log('Sent alliance chat history:', allianceHistory.length, 'messages');
+  }
+
+  // DMs: Fetch open DMs
+  const dmPartners = await ChatMessage.aggregate([
+    { $match: { type: 'dm', $or: [{ from: player.username }, { to: player.username }] } },
+    { $group: { _id: { $cond: [{ $eq: ['$from', player.username] }, '$to', '$from'] } } }
+  ]);
+  for (let partner of dmPartners) {
+    const dmHistory = await ChatMessage.find({
+      type: 'dm',
+      $or: [
+        { from: player.username, to: partner._id },
+        { from: partner._id, to: player.username }
+      ]
+    }).sort({ timestamp: -1 }).limit(50);
+    socket.emit('chatHistory', { type: 'dm', to: partner._id, messages: dmHistory.reverse() });
+    console.log('Sent DM chat history to:', partner._id, 'messages');
+  }
+
   socket.on('joinSystem', async (systemId) => {
     if (socket.currentSystem) {
       socket.to(socket.currentSystem).emit('playerLeft', { id: socket.playerId });
@@ -130,6 +161,7 @@ io.on('connection', async (socket) => {
   });
 
   socket.on('sendChat', async (data) => {
+    console.log('Received sendChat:', data); // Debug
     const { type, message, to, alliance } = data;
     const from = player.username;
     const chatMsg = new ChatMessage({ type, from, message, timestamp: new Date() });
@@ -148,6 +180,52 @@ io.on('connection', async (socket) => {
         if (receiverSocket) receiverSocket.emit('newChat', { type: 'dm', from, to: receiver.username, message });
       }
     }
+  });
+
+  socket.on('startMining', async ({ nodeId }) => {
+    const client = new MongoClient(process.env.MONGO_URI);
+    try {
+      await client.connect();
+      const database = client.db(mongoose.connection.db.databaseName);
+      const collection = database.collection('systems');
+      const systemDoc = await collection.findOne({ id: socket.currentSystem });
+      const node = systemDoc.resources.find(r => r.id === nodeId && r.active);
+      if (node) {
+        // Simulate mining time
+        setTimeout(async () => {
+          const miningClient = new MongoClient(process.env.MONGO_URI); // Reconnect for timeout
+          try {
+            await miningClient.connect();
+            const miningDatabase = miningClient.db(mongoose.connection.db.databaseName);
+            const miningCollection = miningDatabase.collection('systems');
+            await miningCollection.updateOne(
+              { id: socket.currentSystem, "resources.id": nodeId },
+              { $set: { "resources.$.active": false } }
+            );
+            const player = await Player.findById(socket.playerId);
+            player.minerals += node.yield;
+            player.ship.stats.cargo += node.yield;
+            await player.save();
+            socket.emit('miningComplete', { minerals: node.yield });
+            socket.to(socket.currentSystem).emit('nodeDepleted', { nodeId });
+            console.log('Mining complete for nodeId:', nodeId);
+          } catch (err) {
+            console.error('Mining update error:', err);
+          } finally {
+            await miningClient.close();
+          }
+        }, 10000); // 10 seconds
+      }
+    } catch (err) {
+      console.error('Mining error:', err);
+    } finally {
+      await client.close();
+    }
+  });
+
+  socket.on('startMove', ({ targetX, targetY }) => {
+    console.log('Broadcasting startMove for player:', socket.playerId, { targetX, targetY });
+    socket.to(socket.currentSystem).emit('playerStartMove', { id: socket.playerId, targetX, targetY });
   });
 });
 
