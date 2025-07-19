@@ -120,6 +120,7 @@ function initGame() {
     preload() {
       this.load.image('destroyer', 'assets/destroyer.png');
       this.load.image('stars', 'assets/stars.png'); // Add stunning space BG
+      this.load.image('planet', 'assets/planet.png');  // Loads the glowing planet image
     }
 
     create() {
@@ -238,6 +239,25 @@ particles.setDepth(0); // BG layer
               };
               updateProgress();
             });
+          }
+        });
+
+        // Planets rendering - glowing images with interactions
+        data.planets.forEach(p => {
+          const planet = this.add.image(p.position.x, p.position.y, 'planet')
+            .setScale(0.065) // 25% of original size (adjust as needed)
+            .setInteractive()
+            .setDepth(1);
+          planet.postFX.addGlow(0x00ffff, 4, 1, false, 2, 16); // More outward, smoother
+          if (!p.base) {
+            planet.on('pointerdown', () => {
+              socket.emit('buildBase', { planetId: p.id });
+              // Stunning build particles - quick burst for snappy visual
+              const emitter = this.add.particles(p.position.x, p.position.y, 'stars', { speed: 200, lifespan: 1000, blendMode: 'ADD', scale: { start: 1, end: 0 } });
+              emitter.explode(50);  // Explodes particles instantly
+            });
+          } else {
+            planet.on('pointerdown', () => socket.emit('dockBase', { planetId: p.id }));
           }
         });
       });
@@ -478,6 +498,71 @@ particles.setDepth(0); // BG layer
         console.log('Mining error:', data.message);
         alert('Mining error: ' + data.message);
       });
+
+      // Handle base built - log for now (add more visuals later if needed)
+      socket.on('baseBuilt', ({ planetId, ownerId }) => {
+        console.log('Base built on', planetId, 'by', ownerId);
+        // Optional: Refresh system or add base icon on planet (for now, just log)
+      });
+
+      // Docked event - snappy modal popup for research
+      socket.on('docked', ({ base }) => {
+        // Create modal group for easy management
+        const modalGroup = this.add.group();
+        const overlay = this.add.rectangle(0, 0, this.cameras.main.width, this.cameras.main.height, 0x000000, 0.7).setOrigin(0).setInteractive().setDepth(10);
+        const panel = this.add.rectangle(this.cameras.main.centerX, this.cameras.main.centerY, 400, 300, 0x111111, 0.9).setOrigin(0.5).setDepth(11);
+        const title = this.add.text(this.cameras.main.centerX, this.cameras.main.centerY - 100, 'Docked at Base', { fontSize: 24 }).setOrigin(0.5).setDepth(11);
+        const researchBtn = this.add.text(this.cameras.main.centerX, this.cameras.main.centerY, 'Research Hub (30s)', { fontSize: 20 }).setOrigin(0.5).setInteractive().setDepth(11);
+        modalGroup.addMultiple([overlay, panel, title, researchBtn]);
+
+        // Snappy fade-in animation (200ms quick tween)
+        modalGroup.getChildren().forEach(child => { 
+          child.alpha = 0;  // Start invisible
+          this.tweens.add({ targets: child, alpha: 1, duration: 200, ease: 'Linear' });  // Fade in fast
+        });
+
+        // Click research button
+        researchBtn.on('pointerdown', () => {
+          socket.emit('research', { type: 'hub' });
+          // Snappy fade-out (200ms, destroy after)
+          this.tweens.add({ 
+            targets: modalGroup.getChildren(), 
+            alpha: 0, 
+            duration: 200, 
+            ease: 'Linear', 
+            onComplete: () => modalGroup.destroy(true)  // Clean up
+          });
+        });
+      });
+
+      // Research complete - alert and add temporary place button
+      socket.on('researchComplete', ({ type }) => {
+        alert('Hub unlocked! Place in system.');
+        // Add snappy place button (text for simple UI)
+        const placeBtn = this.add.text(100, 100, 'Place Hub', { fontSize: 18 }).setInteractive().setDepth(2);
+        placeBtn.on('pointerdown', () => {
+          socket.emit('placeHub');
+          placeBtn.destroy();  // Remove after click
+        });
+      });
+
+      // System controlled - stunning pulse glow on background
+      socket.on('systemControlled', ({ allianceId }) => {
+        // Quick pulse tween on BG for visual feedback (snappy repeat)
+        this.tweens.add({ 
+          targets: this.bg, 
+          alpha: 0.5, 
+          duration: 500, 
+          yoyo: true,  // Back to normal
+          repeat: 3,   // Pulse 3 times
+          ease: 'Sine.easeInOut'  // Smooth and quick
+        });
+      });
+
+      // General error handler - alert messages from server
+      socket.on('error', (msg) => {
+        alert('Error from server: ' + msg);
+      });
     }
 
     shutdown() {
@@ -491,6 +576,11 @@ particles.setDepth(0); // BG layer
       socket.off('attacked');
       socket.off('destroyed');
       socket.off('miningError');
+      socket.off('baseBuilt');
+      socket.off('docked');
+      socket.off('researchComplete');
+      socket.off('systemControlled');
+      socket.off('error');
     }
   }
 
