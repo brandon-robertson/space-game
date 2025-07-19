@@ -159,7 +159,7 @@ io.on('connection', async (socket) => {
       player.ship.position.x = x;
       player.ship.position.y = y;
       await player.save();
-      socket.to(socket.currentSystem).emit('playerMoved', { id: socket.playerId, x, y });
+      io.to(socket.currentSystem).emit('playerMoved', { id: socket.playerId, x, y }); // <-- changed from socket.to(...)
     }
   });
 
@@ -245,9 +245,15 @@ io.on('connection', async (socket) => {
 
   // --- Attack Handler ---
   socket.on('attack', async ({ targetId }) => {
-    console.log('Received attack request from', socket.playerId, 'on target', targetId); // Debug log
     const attacker = await Player.findById(socket.playerId);
     const target = await Player.findById(targetId);
+    const ax = attacker.ship.position.x;
+    const ay = attacker.ship.position.y;
+    const tx = target.ship.position.x;
+    const ty = target.ship.position.y;
+    const dist = Math.hypot(tx - ax, ty - ay);
+    console.log(`Attack attempt: attacker ${socket.playerId} at (${ax},${ay}), target ${targetId} at (${tx},${ty}), dist=${dist}`);
+
     const lockTime = attackLocks.get(socket.playerId) || 0;
     if (Date.now() - lockTime < 1000) { // Anti-spam 1s
       console.log('Attack spam detected for', socket.playerId);
@@ -256,7 +262,7 @@ io.on('connection', async (socket) => {
     attackLocks.set(socket.playerId, Date.now());
     if (target && attacker.ship.position.systemId === target.ship.position.systemId) {
       const dist = Math.hypot(attacker.ship.position.x - target.ship.position.x, attacker.ship.position.y - target.ship.position.y);
-      if (dist < 250) { // Match client/server attack
+      if (dist <= 250) { // Allow attack at exactly 250 units
         const weapon = attacker.ship.weapons[0] || { cooldown: 5, lastFired: new Date(0) };
         const now = new Date();
         if (now - weapon.lastFired < 1000) { // Anti-spam 1s min

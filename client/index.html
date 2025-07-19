@@ -2,13 +2,79 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"> <!-- Mobile responsive -->
   <title>Space Game</title>
   <script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/socket.io-client@4.7.5/dist/socket.io.min.js"></script>
   <style>
-    body { margin: 0; background: black; color: white; font-family: Arial; }
-    #login { position: absolute; top: 20px; left: 20px; z-index: 10; }
-    #chat { position: absolute; bottom: 20px; left: 20px; width: 300px; height: 200px; background: rgba(0,0,0,0.8); padding: 10px; z-index: 10; display: none; }
+    body { 
+      margin: 0; 
+      background: #001f1f url('assets/stars.jpg') no-repeat center center fixed; /* Dark teal bg with stars (add asset) */
+      background-size: cover;
+      color: #00ff00; /* Green text from screenshot */
+      font-family: Arial, sans-serif; 
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      overflow: hidden;
+    }
+    #login { 
+      text-align: center; 
+      background: rgba(0, 128, 128, 0.7); /* Teal semi-transparent panel */
+      padding: 20px; 
+      border: 2px solid #00ff00; /* Green border */
+      border-radius: 10px; 
+      box-shadow: 0 0 20px #00ff00; /* Green glow */
+      width: 300px; 
+    }
+    #login h1 { 
+      font-size: 2em; /* Title size */
+      margin-bottom: 20px; 
+    }
+    #login p { 
+      margin: 10px 0; 
+    }
+    #login a { 
+      color: #00ff00; /* Green links */
+      text-decoration: none; 
+      font-weight: bold; 
+    }
+    #login a:hover { text-decoration: underline; }
+    #login input { 
+      width: 100%; 
+      padding: 10px; 
+      margin: 10px 0; 
+      border: 1px solid #00ff00; /* Green border */
+      background: rgba(0, 128, 128, 0.3); /* Teal input bg */
+      color: #00ff00; 
+      border-radius: 5px; 
+    }
+    #login button { 
+      width: 100%; 
+      padding: 10px; 
+      margin: 5px 0; 
+      background: #008080; /* Teal button */
+      border: none; 
+      color: #00ff00; /* Green text */
+      cursor: pointer; 
+      border-radius: 5px; 
+      transition: background 0.3s; 
+    }
+    #login button:hover { background: #00ff00; color: #008080; /* Green hover */
+    }
+    #chat { 
+      position: absolute; 
+      bottom: 20px; 
+      left: 20px; 
+      width: 300px; 
+      height: 200px; 
+      background: rgba(0,128,128,0.8); /* Teal chat bg */
+      padding: 10px; 
+      z-index: 10; 
+      display: none; 
+      border: 1px solid #00ff00; /* Green border */
+    }
     #messages { height: 150px; overflow-y: scroll; }
     #chat input { width: 200px; }
     #game-container { display: none; }
@@ -16,16 +82,17 @@
 </head>
 <body>
   <div id="login">
+    <h1>Space Game</h1> <!-- Logo text; replace with <img src="assets/space-game-logo.png"> if generated -->
     <input id="username" placeholder="Username" />
     <input id="password" type="password" placeholder="Password" />
-    <button onclick="register()">Register</button>
     <button onclick="login()">Login</button>
+    <p>No account? <a href="register.html">Create a new account</a></p> <!-- Dummy link -->
+    <p>Forgotten username or password? <a href="reset-password.html">Retrieve your username or password</a></p> <!-- Dummy link -->
   </div>
   <div id="chat">
     <div id="messages"></div>
     <input id="message" placeholder="Type message..." />
     <button onclick="sendGlobalChat()">Send Global</button>
-    <!-- Add buttons for alliance/DM later -->
   </div>
   <div id="game-container"></div>
   <script src="main.js"></script>

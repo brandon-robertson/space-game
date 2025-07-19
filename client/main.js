@@ -115,7 +115,11 @@ function initGame() {
     }
 
     create() {
+      let downX = 0, downY = 0;
+
       this.otherShips = new Map();
+      this.justAttacked = false;
+      this.pendingAttackTarget = null;
 
       // Background
       this.add.image(400, 300, 'stars').setOrigin(0.5);
@@ -238,6 +242,21 @@ function initGame() {
 
       // Player moved (snap)
       socket.on('playerMoved', (data) => {
+        if (data.id === myPlayerId && this.pendingAttackTarget) {
+          const targetShip = this.otherShips.get(this.pendingAttackTarget);
+          if (targetShip) {
+            const dx = targetShip.x - this.playerShip.x;
+            const dy = targetShip.y - this.playerShip.y;
+            const dist = Math.hypot(dx, dy);
+            const attackRange = 250;
+            if (dist <= attackRange + 10) {
+              console.log('Emitting attack event to server:', this.pendingAttackTarget);
+              socket.emit('attack', { targetId: this.pendingAttackTarget });
+              this.pendingAttackTarget = null;
+              this.justAttacked = false; // <-- Add this line (optional)
+            }
+          }
+        }
         const otherShip = this.otherShips.get(data.id);
         if (otherShip) {
           otherShip.setPosition(data.x, data.y);
@@ -275,28 +294,11 @@ function initGame() {
       // If victim rejoins same system later, 'playerEntered'
 
       // Tap to move with drag filter
-      let downX, downY;
       this.input.on('pointerdown', (pointer) => {
         downX = pointer.x;
         downY = pointer.y;
       });
 
-      this.input.on('pointerup', (pointer) => {
-        const dist = Phaser.Math.Distance.Between(downX, downY, pointer.x, pointer.y);
-        if (dist < 5) {
-          socket.emit('startMove', { targetX: downX, targetY: downY });
-          const duration = Phaser.Math.Distance.Between(this.playerShip.x, this.playerShip.y, downX, downY) * 5;
-          this.tweens.add({
-            targets: this.playerShip,
-            x: downX,
-            y: downY,
-            duration: duration,
-            onComplete: () => socket.emit('move', { x: downX, y: downY })
-          });
-        }
-      });
-
-      // Attack on ship click
       this.input.on('gameobjectdown', (pointer, gameObject) => {
         console.log('Clicked game object:', gameObject.texture ? gameObject.texture.key : 'unknown', 'playerId:', gameObject.playerId, 'isOwnShip:', gameObject.isOwnShip);
         if (gameObject.isOwnShip) {
@@ -325,7 +327,9 @@ function initGame() {
             console.log('Initial dist:', dist, 'Player pos:', this.playerShip.x, this.playerShip.y, 'Target pos:', targetShip.x, targetShip.y); // Debug pos
             const attackRange = 250; // Match server, gap for sprites
             if (dist > attackRange) {
-              const moveDist = dist - attackRange; // No buffer, stop at exact range
+              this.justAttacked = true;
+              this.pendingAttackTarget = this.selectedTarget;
+              const moveDist = dist - attackRange;
               const normX = dx / dist;
               const normY = dy / dist;
               const stopX = this.playerShip.x + normX * moveDist;
@@ -338,29 +342,17 @@ function initGame() {
                 x: stopX,
                 y: stopY,
                 duration: duration,
-                ease: 'Linear', // Exact movement, no acceleration overshoot
+                ease: 'Linear',
                 onComplete: () => {
                   socket.emit('move', { x: stopX, y: stopY });
-                  this.time.delayedCall(200, () => {
-                    const newDx = targetShip.x - this.playerShip.x;
-                    const newDy = targetShip.y - this.playerShip.y;
-                    const newDist = Math.hypot(newDx, newDy);
-                    console.log('Delayed new dist:', newDist);
-                    if (newDist <= attackRange + 10) {
-                      socket.emit('attack', { targetId: this.selectedTarget });
-                      console.log('Moved to range and emitting attack on:', this.selectedTarget);
-                    } else {
-                      console.log('Target moved out of range after move - no attack', newDist);
-                      this.attackCooldown = now - 5000;
-                    }
-                    this.isAttacking = false;
-                  });
+                  this.isAttacking = false;
                 }
               });
             } else {
               socket.emit('attack', { targetId: this.selectedTarget });
               console.log('Already in range - Emitting attack on:', this.selectedTarget);
               this.isAttacking = false;
+              this.justAttacked = true;
             }
           } else {
             this.isAttacking = false;
@@ -370,6 +362,27 @@ function initGame() {
           console.log('No valid target for attack - not in otherShips or no playerId');
         }
       });
+
+      this.input.on('pointerup', (pointer) => {
+        if (this.justAttacked) {
+          this.justAttacked = false; // Reset for next click
+          return;
+        }
+        const dist = Phaser.Math.Distance.Between(downX, downY, pointer.x, pointer.y);
+        if (dist < 5) {
+          socket.emit('startMove', { targetX: downX, targetY: downY });
+          const duration = Phaser.Math.Distance.Between(this.playerShip.x, this.playerShip.y, downX, downY) * 5;
+          this.tweens.add({
+            targets: this.playerShip,
+            x: downX,
+            y: downY,
+            duration: duration,
+            onComplete: () => socket.emit('move', { x: downX, y: downY })
+          });
+        }
+      });
+
+
 
       // Handle attacked event and update health bars
       socket.on('attacked', (data) => {
