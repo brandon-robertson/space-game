@@ -118,21 +118,43 @@ function initGame() {
     }
 
     preload() {
-      // No need to load 'destroyer' again, loaded in GalaxyScene
+      this.load.image('destroyer', 'assets/destroyer.png');
+      this.load.image('stars', 'assets/stars.png'); // Add stunning space BG
     }
 
     create() {
+      // Remove any duplicate background image adds!
+      this.bg = this.add.tileSprite(
+        0, 0,
+        this.sys.game.config.width,
+        this.sys.game.config.height,
+        'stars'
+).setOrigin(0, 0).setDepth(0);
+
+      // Stunning particles: Nebula/stars
+      const centerX = this.sys.game.config.width / 2;
+const centerY = this.sys.game.config.height / 2;
+const particles = this.add.particles(centerX, centerY, 'stars', {
+  speed: { min: -10, max: 10 },
+  scale: { start: 0.1, end: 0 },
+  blendMode: 'ADD',
+  frequency: 100,
+  lifespan: 5000,
+  quantity: 1,
+  emitting: true
+});
+particles.setDepth(0); // BG layer
+
       let downX = 0, downY = 0;
 
       this.otherShips = new Map();
       this.justAttacked = false;
       this.pendingAttackTarget = null;
 
-      // Background
-      this.add.image(400, 300, 'stars').setOrigin(0.5);
-
       // Player ship
-      this.playerShip = this.add.sprite(400, 300, 'destroyer').setScale(0.1).setInteractive();
+      this.playerShip = this.add.sprite(400, 300, 'destroyer');
+      this.playerShip.setTint(0xbbffbb);
+      this.playerShip.setScale(0.1).setInteractive();
       this.playerShip.isOwnShip = true; // Flag to identify own ship - no
       this.playerShip.setDepth(1);
 
@@ -306,7 +328,11 @@ function initGame() {
       // If victim rejoins same system later, 'playerEntered'
 
       // Tap to move with drag filter
+      let lastPointerDown = 0;
       this.input.on('pointerdown', (pointer) => {
+        const now = this.time.now || Date.now();
+        if (now - lastPointerDown < 200) return; // 200ms throttle
+        lastPointerDown = now;
         downX = pointer.x;
         downY = pointer.y;
       });

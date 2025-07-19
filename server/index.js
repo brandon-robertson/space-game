@@ -9,11 +9,29 @@ const mongoose = require('mongoose');
 const jwt = require('jsonwebtoken');
 const Player = require('./models/Player');
 const ChatMessage = require('./models/ChatMessage');
-const { MongoClient } = require('mongodb');
+const { MongoClient, ObjectId } = require('mongodb'); // For handling IDs
 const onlineUsers = new Map();
 const attackLocks = new Map(); // playerId: timestamp
 
+// Global regen timer - runs once for the whole server
+const regenInterval = setInterval(async () => {
+  const client = new MongoClient(process.env.MONGO_URI);
+  try {
+    await client.connect();
+    const db = client.db(mongoose.connection.db.databaseName);
+    await db.collection('systems').updateMany({}, { $set: { 'resources.$[].active': true } });
+    console.log('Global reset all mining nodes to active');
+  } catch (err) {
+    console.error('Global node regen error:', err);
+  } finally {
+    await client.close();
+  }
+}, 60000);
+
 const app = express();
+app.use(cors());
+app.use(express.json()); // <-- Move this line here, before any routes
+
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
@@ -60,6 +78,9 @@ io.on('connection', async (socket) => {
     socket.emit('chatHistory', { type: 'alliance', messages: allianceHistory.reverse() });
     console.log('Sent alliance chat history:', allianceHistory.length, 'messages');
   }
+
+  // Join alliance room if in one (for chats/broadcasts)
+  if (player.alliance) socket.join(`alliance_${player.alliance}`);
 
   // DMs: Fetch open DMs
   const dmPartners = await ChatMessage.aggregate([
@@ -130,6 +151,13 @@ io.on('connection', async (socket) => {
       systemDoc = await collection.findOne({ id: systemId });
       console.log('Forced node reset to active for testing');
 
+      // Spawn planets if missing (like resources)
+      if (!systemDoc.planets || systemDoc.planets.length === 0) {
+        const planetsArray = [{ id: 'planet1', position: { x: 200, y: 200 }, active: true, base: null }];
+        await collection.updateOne({ id: systemId }, { $set: { planets: planetsArray } });
+        systemDoc = await collection.findOne({ id: systemId });
+      }
+
       // Fetch existing players
       const existingPlayers = [];
       const socketsInRoom = await io.in(systemId).fetchSockets();
@@ -141,8 +169,22 @@ io.on('connection', async (socket) => {
       }
 
       // Send to joiner with resources
-      console.log('Emitting systemData with resources:', JSON.stringify({ id: systemId, myPos: { x: player.ship.position.x, y: player.ship.position.y }, existingPlayers, resources: systemDoc.resources }, null, 2));
-      socket.emit('systemData', { id: systemId, myPos: { x: player.ship.position.x, y: player.ship.position.y }, existingPlayers, resources: systemDoc.resources });
+      console.log('Emitting systemData with resources:', JSON.stringify({
+        id: systemId,
+        myPos: { x: player.ship.position.x, y: player.ship.position.y },
+        existingPlayers,
+        resources: systemDoc.resources,
+        planets: systemDoc.planets,
+        type: systemDoc.type
+      }, null, 2));
+      socket.emit('systemData', {
+        id: systemId,
+        myPos: { x: player.ship.position.x, y: player.ship.position.y },
+        existingPlayers,
+        resources: systemDoc.resources,
+        planets: systemDoc.planets,
+        type: systemDoc.type
+      });
 
       // Broadcast entry
       socket.to(systemId).emit('playerEntered', { id: socket.playerId, x: player.ship.position.x, y: player.ship.position.y });
@@ -261,6 +303,22 @@ io.on('connection', async (socket) => {
     }
     attackLocks.set(socket.playerId, Date.now());
     if (target && attacker.ship.position.systemId === target.ship.position.systemId) {
+
+      // --- Safe zone PvP check ---
+      const systemClient = new MongoClient(process.env.MONGO_URI);
+      try {
+        await systemClient.connect();
+        const db = systemClient.db(mongoose.connection.db.databaseName);
+        const systemDoc = await db.collection('systems').findOne({ id: attacker.ship.position.systemId });
+        if (systemDoc.type === 'safe') {
+          console.log('PvP blocked in safe zone');
+          return socket.emit('attackError', { message: 'PvP disabled in safe zone' });
+        }
+      } finally {
+        await systemClient.close();
+      }
+      // --- end safe check ---
+
       const dist = Math.hypot(attacker.ship.position.x - target.ship.position.x, attacker.ship.position.y - target.ship.position.y);
       if (dist <= 250) { // Allow attack at exactly 250 units
         const weapon = attacker.ship.weapons[0] || { cooldown: 5, lastFired: new Date(0) };
@@ -316,24 +374,138 @@ io.on('connection', async (socket) => {
     socket.to(socket.currentSystem).emit('playerStartMove', { id: socket.playerId, targetX, targetY });
   });
 
-  // Mining node global regen timer (for testing, resets every 1 min)
-  // Note: For production, move this outside io.on('connection') to avoid duplicate intervals!
-  const regenInterval = setInterval(async () => {
+  // Place this INSIDE the connection block:
+  socket.on('joinAlliance', async ({ allianceId }) => {
+    const player = await Player.findById(socket.playerId);
+    if (player.alliance) return socket.emit('error', 'Already in alliance');
     const client = new MongoClient(process.env.MONGO_URI);
     try {
       await client.connect();
       const db = client.db(mongoose.connection.db.databaseName);
-      await db.collection('systems').updateMany({}, { $set: { 'resources.$[].active': true } });
-      console.log('Reset all mining nodes to active');
+      const alliance = await db.collection('alliances').findOne({ _id: new ObjectId(allianceId) });
+      if (!alliance) return socket.emit('error', 'Invalid alliance');
+      await db.collection('alliances').updateOne({ _id: new ObjectId(allianceId) }, { $push: { members: socket.playerId } });
+      await Player.findByIdAndUpdate(socket.playerId, { alliance: allianceId });
+      socket.join(`alliance_${allianceId}`);
+      socket.emit('allianceJoined', { allianceId });
     } catch (err) {
-      console.error('Node regen error:', err);
+      socket.emit('error', 'Join failed');
     } finally {
       await client.close();
     }
-  }, 60000); // 1 min for testing
+  });
 
-  socket.on('disconnect', () => {
-    clearInterval(regenInterval); // Clean up interval per socket
+  // Place after the joinSystem block:
+
+  // Build base on planet
+  socket.on('buildBase', async ({ planetId }) => {
+    const player = await Player.findById(socket.playerId);
+    if (player.minerals < 100) return socket.emit('error', 'Insufficient minerals');
+    const client = new MongoClient(process.env.MONGO_URI);
+    try {
+      await client.connect();
+      const db = client.db(mongoose.connection.db.databaseName);
+      const system = await db.collection('systems').findOne({ id: socket.currentSystem });
+      const planetIndex = system.planets.findIndex(p => p.id === planetId && !p.base);
+      if (planetIndex === -1) return socket.emit('error', 'Planet occupied or invalid');
+      await db.collection('systems').updateOne(
+        { id: socket.currentSystem },
+        { $set: { [`planets.${planetIndex}.base`]: { ownerId: socket.playerId, builtAt: new Date(), research: { level: 0, unlocks: [] } } } }
+      );
+      await Player.findByIdAndUpdate(socket.playerId, { $inc: { minerals: -100 } });
+      io.to(socket.currentSystem).emit('baseBuilt', { planetId, ownerId: socket.playerId });
+    } catch (err) {
+      socket.emit('error', 'Build failed');
+    } finally {
+      await client.close();
+    }
+  });
+
+  // Dock at base
+  socket.on('dockBase', async ({ planetId }) => {
+    const client = new MongoClient(process.env.MONGO_URI);
+    try {
+      await client.connect();
+      const db = client.db(mongoose.connection.db.databaseName);
+      const system = await db.collection('systems').findOne({ id: socket.currentSystem });
+      const planet = system.planets.find(p => p.id === planetId);
+      if (!planet.base) return socket.emit('error', 'No base');
+      const player = await Player.findById(socket.playerId);
+      const baseOwner = await Player.findById(planet.base.ownerId);
+      if (planet.base.ownerId !== socket.playerId && player.alliance !== baseOwner.alliance) return socket.emit('error', 'Access denied');
+      await Player.findByIdAndUpdate(socket.playerId, { 'ship.position.x': planet.position.x, 'ship.position.y': planet.position.y });
+      socket.emit('docked', { base: planet.base });
+    } catch (err) {
+      socket.emit('error', 'Dock failed');
+    } finally {
+      await client.close();
+    }
+  });
+
+  // Research hub (30s timer)
+  socket.on('research', async ({ type }) => {
+    if (type !== 'hub') return socket.emit('error', 'Invalid research');
+    setTimeout(async () => {
+      const client = new MongoClient(process.env.MONGO_URI);
+      try {
+        await client.connect();
+        const db = client.db(mongoose.connection.db.databaseName);
+        await db.collection('systems').updateOne(
+          { id: socket.currentSystem, 'planets.base.ownerId': socket.playerId },
+          { $push: { 'planets.$.base.research.unlocks': 'hub' }, $inc: { 'planets.$.base.research.level': 1 } }
+        );
+        socket.emit('researchComplete', { type });
+      } catch (err) {
+        socket.emit('error', 'Research failed');
+      } finally {
+        await client.close();
+      }
+    }, 30000);
+  });
+
+  // Place hub for control
+  socket.on('placeHub', async () => {
+    const player = await Player.findById(socket.playerId);
+    if (!player.alliance) return socket.emit('error', 'Need alliance');
+    const client = new MongoClient(process.env.MONGO_URI);
+    try {
+      await client.connect();
+      const db = client.db(mongoose.connection.db.databaseName);
+      const system = await db.collection('systems').findOne({ id: socket.currentSystem });
+      const hasUnlock = system.planets.some(p => p.base && p.base.ownerId === socket.playerId && p.base.research.unlocks.includes('hub'));
+      if (!hasUnlock || system.ownerAllianceId) return socket.emit('error', 'Cannot place hub');
+      await db.collection('systems').updateOne({ id: socket.currentSystem }, { $set: { ownerAllianceId: player.alliance } });
+      io.to(socket.currentSystem).emit('systemControlled', { allianceId: player.alliance });
+    } catch (err) {
+      socket.emit('error', 'Place failed');
+    } finally {
+      await client.close();
+    }
+  });
+});
+
+// API to create alliance (call from client later)
+app.post('/createAlliance', async (req, res) => {
+  console.log('Incoming req.body:', req.body);
+  const { name } = req.body;
+  const token = req.headers.authorization?.split(' ')[1];
+  if (!token) return res.status(401).json({ error: 'No token' });
+  jwt.verify(token, process.env.JWT_SECRET, async (err, decoded) => {
+    if (err) return res.status(401).json({ error: 'Invalid token' });
+    const client = new MongoClient(process.env.MONGO_URI);
+    try {
+      await client.connect();
+      const db = client.db(mongoose.connection.db.databaseName);
+      const alliances = db.collection('alliances');
+      if (await alliances.findOne({ name })) return res.status(400).json({ error: 'Name taken' });
+      const result = await alliances.insertOne({ name, members: [decoded.id], ownerId: decoded.id });
+      await Player.findByIdAndUpdate(decoded.id, { alliance: result.insertedId.toString() });
+      res.json({ allianceId: result.insertedId.toString() });
+    } catch (err) {
+      res.status(500).json({ error: 'Failed' });
+    } finally {
+      await client.close();
+    }
   });
 });
 
@@ -392,3 +564,4 @@ app.post('/login', async (req, res) => {
     res.status(500).json({ error: 'Login failed' });
   }
 });
+
