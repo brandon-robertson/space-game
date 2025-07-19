@@ -19,20 +19,27 @@ function register() {
 function login() {
   const username = document.getElementById('username').value;
   const password = document.getElementById('password').value;
-  fetch('https://orange-halibut-9675jr46x9h799j-3000.app.github.dev/login', {
+  fetch('https://orange-halibut-9675jr46x9h799j-3000.app.github.dev/login', { // <-- FULL URL
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username, password })
-  }).then(res => res.json()).then(data => {
+  })
+  .then(res => res.json())
+  .then(data => {
     if (data.token) {
-      localStorage.setItem('token', data.token);
-      initGame();
-    } else alert(data.error);
+      localStorage.setItem('token', data.token); // Store token for socket
+      document.getElementById('login-container').style.display = 'none';
+      document.getElementById('game-container').style.display = 'block';
+      initGame(data.token, username);
+    } else {
+      alert(data.error || 'Login failed');
+    }
   });
 }
 
 function initGame() {
-  document.getElementById('login').style.display = 'none';
+  document.getElementById('login-container').style.display = 'none';
+  document.getElementById('game-container').style.display = 'block'; // <-- Place here
   document.getElementById('chat').style.display = 'block';
 
   // Create socket with auth
@@ -131,6 +138,7 @@ function initGame() {
 
       // Health bar function
       function updateHealthBar(bar, x, y, shield, armor) {
+        if (!bar) return; // Prevent error if healthBar is undefined
         bar.clear();
         shield = Math.max(shield, 0); // Min 0, no upper clamp needed if server caps
         armor = Math.max(armor, 0);
@@ -244,17 +252,21 @@ function initGame() {
       socket.on('playerMoved', (data) => {
         if (data.id === myPlayerId && this.pendingAttackTarget) {
           const targetShip = this.otherShips.get(this.pendingAttackTarget);
-          if (targetShip) {
-            const dx = targetShip.x - this.playerShip.x;
-            const dy = targetShip.y - this.playerShip.y;
-            const dist = Math.hypot(dx, dy);
-            const attackRange = 250;
-            if (dist <= attackRange + 10) {
-              console.log('Emitting attack event to server:', this.pendingAttackTarget);
-              socket.emit('attack', { targetId: this.pendingAttackTarget });
-              this.pendingAttackTarget = null;
-              this.justAttacked = false; // <-- Add this line (optional)
-            }
+          if (!targetShip) {
+            console.warn('Target ship not found for attack:', this.pendingAttackTarget);
+            // Optionally: retry after a short delay
+            // setTimeout(() => socket.emit('attack', { targetId: this.pendingAttackTarget }), 100);
+            return;
+          }
+          const dx = targetShip.x - this.playerShip.x;
+          const dy = targetShip.y - this.playerShip.y;
+          const dist = Math.hypot(dx, dy);
+          const attackRange = 250;
+          if (dist <= attackRange + 10) {
+            console.log('Emitting attack event to server:', this.pendingAttackTarget);
+            socket.emit('attack', { targetId: this.pendingAttackTarget });
+            this.pendingAttackTarget = null;
+            this.justAttacked = false; // <-- Add this line (optional)
           }
         }
         const otherShip = this.otherShips.get(data.id);
@@ -337,12 +349,24 @@ function initGame() {
               console.log('Stop point:', stopX, stopY, 'moveDist:', moveDist);
               socket.emit('startMove', { targetX: stopX, targetY: stopY });
               const duration = moveDist * 5;
+              const angle = Phaser.Math.Angle.Between(this.playerShip.x, this.playerShip.y, stopX, stopY);
+              this.playerShip.rotation = angle + Math.PI/2; // Adjust if ship points up
+              this.tweens.add({
+                targets: this.playerShip,
+                rotation: angle + Math.PI/2, // Adjust as needed
+                duration: 200
+              });
               this.tweens.add({
                 targets: this.playerShip,
                 x: stopX,
                 y: stopY,
                 duration: duration,
-                ease: 'Linear',
+                ease: 'Sine.easeInOut', // Smoother acceleration/deceleration
+                onStart: () => {
+                  this.playerShip.rotation = angle; // Instantly face direction
+                  // Or for smooth rotation:
+                  // this.tweens.add({ targets: this.playerShip, rotation: angle, duration: 200 });
+                },
                 onComplete: () => {
                   socket.emit('move', { x: stopX, y: stopY });
                   this.isAttacking = false;
@@ -392,7 +416,9 @@ function initGame() {
         if (ship) {
           ship.shield = data.targetShield;
           ship.armor = data.targetArmor;
-          updateHealthBar(ship.healthBar, ship.x, ship.y, ship.shield, ship.armor);
+          if (ship && ship.healthBar) {
+            updateHealthBar(ship.healthBar, ship.x, ship.y, ship.shield, ship.armor);
+          }
 
           const attackerShip = data.attackerId === myPlayerId ? this.playerShip : this.otherShips.get(data.attackerId);
           if (attackerShip && ship) {
