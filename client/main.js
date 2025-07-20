@@ -115,6 +115,16 @@ function initGame() {
   class SystemScene extends Phaser.Scene {
     constructor() {
       super('System');
+      // Adjustable boundary constants
+      this.systemSize = 2200;  // Square size
+      this.centerX = this.systemSize / 2;  // 1100
+      this.centerY = this.systemSize / 2;  // 1100
+      this.boundaryRadius = 1000;  // Circle radius
+      this.cameraMargin = 50;  // Buffer beyond circle
+      this.glowThickness = 3;  // Line width
+      this.glowColor = 0x00ffff;  // Light blue
+      this.downX = null;
+      this.downY = null;
     }
 
     preload() {
@@ -124,40 +134,73 @@ function initGame() {
     }
 
     create() {
+      this.otherShips = new Map(); // <-- Add this line at the top!
+
       // Remove any duplicate background image adds!
       this.bg = this.add.tileSprite(
         0, 0,
         this.sys.game.config.width,
         this.sys.game.config.height,
         'stars'
-).setOrigin(0, 0).setDepth(0);
+      ).setOrigin(0, 0).setDepth(0);
+
+      this.bg.setTileScale(0.5, 0.5);  // Smaller repeat for less rendering load
+
+      // Fixed system bounds and camera limits (snappy follow)
+      this.cameras.main.setBounds(
+        this.centerX - this.boundaryRadius - this.cameraMargin,
+        this.centerY - this.boundaryRadius - this.cameraMargin,
+        (this.boundaryRadius + this.cameraMargin) * 2,
+        (this.boundaryRadius + this.cameraMargin) * 2
+      );
 
       // Stunning particles: Nebula/stars
       const centerX = this.sys.game.config.width / 2;
-const centerY = this.sys.game.config.height / 2;
-const particles = this.add.particles(centerX, centerY, 'stars', {
-  speed: { min: -10, max: 10 },
-  scale: { start: 0.1, end: 0 },
-  blendMode: 'ADD',
-  frequency: 100,
-  lifespan: 5000,
-  quantity: 1,
-  emitting: true
-});
-particles.setDepth(0); // BG layer
+      const centerY = this.sys.game.config.height / 2;
+      const particles = this.add.particles(centerX, centerY, 'stars', {
+        speed: { min: -10, max: 10 },
+        scale: { start: 0.1, end: 0 },
+        blendMode: 'ADD',
+        frequency: 500,
+        lifespan: 5000,
+        quantity: 0.5,
+        emitting: true
+      });
+      particles.setDepth(0);
 
-      let downX = 0, downY = 0;
+      // Glowing blue circle boundary with slow pulse
+      this.boundaryGraphics = this.add.graphics({ lineStyle: { width: this.glowThickness, color: this.glowColor, alpha: 0.8 } });
+      this.boundaryGraphics.strokeCircle(this.centerX, this.centerY, this.boundaryRadius);
+      this.boundaryGraphics.setDepth(2);  // Above BG
+      // Slow pulsing animation (fade in/out)
+      this.tweens.add({
+        targets: this.boundaryGraphics,
+        alpha: 0.6,  // From 0.8 to 0.6
+        duration: 2000,  // Slow 2s
+        yoyo: true,  // Back to 0.8
+        repeat: -1,  // Forever
+        ease: 'Sine.easeInOut'  // Smooth
+      });
+      // Optional rim particles for extra glow (sparse/snappy)
+      const rimParticles = this.add.particles(this.centerX, this.centerY, 'stars', {
+        speed: 0,
+        angle: { min: 0, max: 360 },
+        scale: { start: 0.05, end: 0 },
+        lifespan: 1000,
+        quantity: 5,
+        emitting: true,
+        stopAfter: 2000  // Stop after 2s to prevent continuous load
+      });
+      rimParticles.setDepth(1);
 
-      this.otherShips = new Map();
-      this.justAttacked = false;
-      this.pendingAttackTarget = null;
-
-      // Player ship
-      this.playerShip = this.add.sprite(400, 300, 'destroyer');
+      // Optional: Soft glowing halo around the player ship
+      this.playerShip = this.add.sprite(400, 300, 'destroyer');  // Create ship here
       this.playerShip.setTint(0xbbffbb);
       this.playerShip.setScale(0.1).setInteractive();
       this.playerShip.isOwnShip = true; // Flag to identify own ship - no
       this.playerShip.setDepth(1);
+
+      this.cameras.main.startFollow(this.playerShip, true, 0.1);  // Moved here - follow after ship created
 
       // Health bar function
       function updateHealthBar(bar, x, y, shield, armor) {
@@ -190,76 +233,117 @@ particles.setDepth(0); // BG layer
 
       // System data (set own pos and create existing)
       socket.on('systemData', (data) => {
-        this.playerShip.setPosition(data.myPos.x, data.myPos.y);
+        console.log('Received systemData:', data);  // Debug to see what server sends
+        // Safe default if myPos missing
+        const myPos = data.myPos || { x: 400, y: 300 };
+        this.playerShip.setPosition(myPos.x, myPos.y);
+
+        // Clamp player ship inside circle
+        let shipDist = Math.hypot(this.playerShip.x - this.centerX, this.playerShip.y - this.centerY);
+        if (shipDist > this.boundaryRadius) {
+          const angle = Math.atan2(this.playerShip.y - this.centerY, this.playerShip.x - this.centerX);
+          this.playerShip.x = this.centerX + Math.cos(angle) * this.boundaryRadius;
+          this.playerShip.y = this.centerY + Math.sin(angle) * this.boundaryRadius;
+        }
+
         updateHealthBar(this.playerHealthBar, this.playerShip.x, this.playerShip.y, 100, 100);
-        data.existingPlayers.forEach(p => {
-          if (!this.otherShips.has(p.id)) {
-            const otherShip = this.add.sprite(p.x, p.y, 'destroyer').setScale(0.1).setInteractive();
-            otherShip.playerId = p.id; // Ensure set
-            otherShip.shield = 100;
-            otherShip.armor = 100;
-            otherShip.healthBar = this.add.graphics();
-            updateHealthBar(otherShip.healthBar, p.x, p.y, otherShip.shield, otherShip.armor);
-            this.otherShips.set(p.id, otherShip);
-            console.log('Added other ship with playerId:', p.id); // Debug:
-          }
-        });
-        // Mining nodes
-        data.resources.forEach(r => {
-          console.log('Creating mining node:', r.id, 'active:', r.active);
-          let nodeColor = r.active ? 0xffff00 : 0x555555; // Yellow if active, gray if not
-          const node = this.add.circle(r.position.x, r.position.y, 30, nodeColor);
-          if (r.active) {
-            node.setInteractive();
-            node.on('pointerdown', () => {
-              console.log('Starting mining on active node:', r.id);
-              socket.emit('startMining', { nodeId: r.id });
-              // Progress bar code remains the same...
-              const progressBar = this.add.graphics();
-              progressBar.fillStyle(0x00ff00, 1);
-              progressBar.fillRect(r.position.x - 25, r.position.y - 40, 0, 5);
+        if (Array.isArray(data.existingPlayers)) {
+          data.existingPlayers.forEach(p => {
+            if (!this.otherShips.has(p.id)) {
+              const otherShip = this.add.sprite(p.x, p.y, 'destroyer').setScale(0.1).setInteractive();
+              otherShip.playerId = p.id; // Ensure set
+              otherShip.shield = 100;
+              otherShip.armor = 100;
+              otherShip.healthBar = this.add.graphics();
+              updateHealthBar(otherShip.healthBar, p.x, p.y, otherShip.shield, otherShip.armor);
+              this.otherShips.set(p.id, otherShip);
+              console.log('Added other ship with playerId:', p.id); // Debug:
+            }
+          });
+        }
+        if (Array.isArray(data.resources)) {
+          data.resources.forEach(r => {
+            let posX = r.position.x;
+            let posY = r.position.y;
+            let attempts = 0;
+            while (Math.hypot(posX - this.centerX, posY - this.centerY) > this.boundaryRadius && attempts < 10) {
+              const angle = Math.random() * 2 * Math.PI;
+              const dist = Math.random() * this.boundaryRadius;
+              posX = this.centerX + dist * Math.cos(angle);
+              posY = this.centerY + dist * Math.sin(angle);
+              attempts++;
+            }
+            r.position.x = posX;
+            r.position.y = posY;
 
-              const timer = this.time.addEvent({
-                delay: 10000,
-                callback: () => {
-                  progressBar.destroy();
-                },
-                loop: false
-              });
-
-              const updateProgress = () => {
-                if (!progressBar.scene) return;
-                const progress = 1 - (timer.getRemaining() / 10000);
-                progressBar.clear();
+            console.log('Creating mining node:', r.id, 'active:', r.active);
+            let nodeColor = r.active ? 0xffff00 : 0x555555; // Yellow if active, gray if not
+            const node = this.add.circle(r.position.x, r.position.y, 30, nodeColor);
+            if (r.active) {
+              node.setInteractive();
+              node.on('pointerdown', () => {
+                console.log('Starting mining on active node:', r.id);
+                socket.emit('startMining', { nodeId: r.id });
+                // Progress bar code remains the same...
+                const progressBar = this.add.graphics();
                 progressBar.fillStyle(0x00ff00, 1);
-                progressBar.fillRect(r.position.x - 25, r.position.y - 40, 50 * progress, 5);
-                if (progress < 1) {
-                  progressBar.scene.time.delayedCall(16, updateProgress);
-                }
-              };
-              updateProgress();
-            });
-          }
-        });
+                progressBar.fillRect(r.position.x - 25, r.position.y - 40, 0, 5);
 
-        // Planets rendering - glowing images with interactions
-        data.planets.forEach(p => {
-          const planet = this.add.image(p.position.x, p.position.y, 'planet')
-            .setScale(0.065) // 25% of original size (adjust as needed)
-            .setInteractive()
-            .setDepth(1);
-          planet.postFX.addGlow(0x00ffff, 4, 1, false, 2, 16); // More outward, smoother
-          if (!p.base) {
-            planet.on('pointerdown', () => {
-              socket.emit('buildBase', { planetId: p.id });
-              // Stunning build particles - quick burst for snappy visual
-              const emitter = this.add.particles(p.position.x, p.position.y, 'stars', { speed: 200, lifespan: 1000, blendMode: 'ADD', scale: { start: 1, end: 0 } });
-              emitter.explode(50);  // Explodes particles instantly
-            });
-          } else {
-            planet.on('pointerdown', () => socket.emit('dockBase', { planetId: p.id }));
-          }
-        });
+                const timer = this.time.addEvent({
+                  delay: 10000,
+                  callback: () => {
+                    progressBar.destroy();
+                  },
+                  loop: false
+                });
+
+                const updateProgress = () => {
+                  if (!progressBar.scene) return;
+                  const progress = 1 - (timer.getRemaining() / 10000);
+                  progressBar.clear();
+                  progressBar.fillStyle(0x00ff00, 1);
+                  progressBar.fillRect(r.position.x - 25, r.position.y - 40, 50 * progress, 5);
+                  if (progress < 1) {
+                    progressBar.scene.time.delayedCall(16, updateProgress);
+                  }
+                };
+                updateProgress();
+              });
+            }
+          });
+        }
+        if (Array.isArray(data.planets)) {
+          data.planets.forEach(p => {
+            let posX = p.position.x;
+            let posY = p.position.y;
+            let attempts = 0;
+            while (Math.hypot(posX - this.centerX, posY - this.centerY) > this.boundaryRadius && attempts < 10) {
+              const angle = Math.random() * 2 * Math.PI;
+              const dist = Math.random() * this.boundaryRadius;
+              posX = this.centerX + dist * Math.cos(angle);
+              posY = this.centerY + dist * Math.sin(angle);
+              attempts++;
+            }
+            p.position.x = posX;
+            p.position.y = posY;
+
+            const planet = this.add.image(p.position.x, p.position.y, 'planet')
+              .setScale(0.065) // 25% of original size (adjust as needed)
+              .setInteractive()
+              .setDepth(1);
+            planet.postFX.addGlow(0x00ffff, 4, 1, false, 2, 16); // More outward, smoother
+            if (!p.base) {
+              planet.on('pointerdown', () => {
+                socket.emit('buildBase', { planetId: p.id });
+                // Stunning build particles - quick burst for snappy visual
+                const emitter = this.add.particles(p.position.x, p.position.y, 'stars', { speed: 200, lifespan: 1000, blendMode: 'ADD', scale: { start: 1, end: 0 } });
+                emitter.explode(50);  // Explodes particles instantly
+              });
+            } else {
+              planet.on('pointerdown', () => socket.emit('dockBase', { planetId: p.id }));
+            }
+          });
+        }
       });
 
       // Player entered
@@ -311,16 +395,36 @@ particles.setDepth(0); // BG layer
             this.justAttacked = false; // <-- Add this line (optional)
           }
         }
-        const otherShip = this.otherShips.get(data.id);
-        if (otherShip) {
-          otherShip.setPosition(data.x, data.y);
-          updateHealthBar(
-            otherShip.healthBar,
-            data.x,
-            data.y,
-            otherShip.shield || 100,
-            otherShip.armor || 100
-          );
+        if (data.id === myPlayerId) {
+          // Tween your own ship to the new position
+          const duration = Phaser.Math.Distance.Between(this.playerShip.x, this.playerShip.y, data.x, data.y) * 5;
+          this.tweens.add({
+            targets: this.playerShip,
+            x: data.x,
+            y: data.y,
+            duration: duration,
+            ease: 'Sine.easeInOut'
+          });
+        } else {
+          // Tween other ships
+          const otherShip = this.otherShips.get(data.id);
+          if (otherShip) {
+            const duration = Phaser.Math.Distance.Between(otherShip.x, otherShip.y, data.x, data.y) * 5;
+            this.tweens.add({
+              targets: otherShip,
+              x: data.x,
+              y: data.y,
+              duration: duration,
+              ease: 'Sine.easeInOut'
+            });
+            updateHealthBar(
+              otherShip.healthBar,
+              data.x,
+              data.y,
+              otherShip.shield || 100,
+              otherShip.armor || 100
+            );
+          }
         }
       });
 
@@ -350,11 +454,16 @@ particles.setDepth(0); // BG layer
       // Tap to move with drag filter
       let lastPointerDown = 0;
       this.input.on('pointerdown', (pointer) => {
-        const now = this.time.now || Date.now();
-        if (now - lastPointerDown < 200) return; // 200ms throttle
-        lastPointerDown = now;
-        downX = pointer.x;
-        downY = pointer.y;
+        const distFromCenter = Math.hypot(pointer.x - this.centerX, pointer.y - this.centerY);
+        if (distFromCenter > this.boundaryRadius) {
+          console.log('Click outside boundary - ignored');
+          // Red flash feedback (snappy)
+          this.boundaryGraphics.lineStyle(this.glowThickness, 0xff0000, 1);  // Temp red
+          this.time.delayedCall(200, () => this.boundaryGraphics.lineStyle(this.glowThickness, this.glowColor, 0.8));  // Back to blue
+          return;
+        }
+        this.downX = pointer.x;
+        this.downY = pointer.y;
       });
 
       this.input.on('gameobjectdown', (pointer, gameObject) => {
@@ -435,24 +544,76 @@ particles.setDepth(0); // BG layer
 
       this.input.on('pointerup', (pointer) => {
         if (this.justAttacked) {
-          this.justAttacked = false; // Reset for next click
+          this.justAttacked = false;
           return;
         }
-        const dist = Phaser.Math.Distance.Between(downX, downY, pointer.x, pointer.y);
-        if (dist < 5) {
-          socket.emit('startMove', { targetX: downX, targetY: downY });
-          const duration = Phaser.Math.Distance.Between(this.playerShip.x, this.playerShip.y, downX, downY) * 5;
+        const dist = Phaser.Math.Distance.Between(this.downX, this.downY, pointer.x, pointer.y);
+        const clickDistFromCenter = Math.hypot(pointer.x - this.centerX, pointer.y - this.centerY);
+        if (dist < 5 && clickDistFromCenter <= this.boundaryRadius) {
+          const targetX = this.downX;
+          const targetY = this.downY;
+          socket.emit('startMove', { targetX, targetY });
+
+          // Predictive local tween for snappy feel
+          const duration = Phaser.Math.Distance.Between(this.playerShip.x, this.playerShip.y, targetX, targetY) * 5;
           this.tweens.add({
             targets: this.playerShip,
-            x: downX,
-            y: downY,
+            x: targetX,
+            y: targetY,
             duration: duration,
-            onComplete: () => socket.emit('move', { x: downX, y: downY })
+            ease: 'Sine.easeInOut',
+            repeat: 0, // Ensure no loops
+            onComplete: () => {
+              socket.emit('move', { x: targetX, y: targetY });
+            }
           });
+        } else if (clickDistFromCenter > this.boundaryRadius) {
+          this.boundaryGraphics.lineStyle(this.glowThickness, 0xff0000, 1);
+          this.time.delayedCall(200, () => this.boundaryGraphics.lineStyle(this.glowThickness, this.glowColor, 0.8));
         }
       });
 
-
+      // Player moved (tween on server event)
+      socket.on('playerMoved', (data) => {
+        if (data.id === myPlayerId && this.pendingAttackTarget) {
+          const targetShip = this.otherShips.get(this.pendingAttackTarget);
+          if (!targetShip) {
+            console.warn('Target ship not found for attack:', this.pendingAttackTarget);
+            return;
+          }
+          const dx = targetShip.x - this.playerShip.x;
+          const dy = targetShip.y - this.playerShip.y;
+          const dist = Math.hypot(dx, dy);
+          const attackRange = 250;
+          if (dist <= attackRange + 10) {
+            console.log('Emitting attack event to server:', this.pendingAttackTarget);
+            socket.emit('attack', { targetId: this.pendingAttackTarget });
+            this.pendingAttackTarget = null;
+            this.justAttacked = false;
+          }
+        }
+        if (data.id === myPlayerId) {
+          // For own: Correct pos if needed (kill active tweens)
+          this.tweens.killTweensOf(this.playerShip);
+          this.playerShip.setPosition(data.x, data.y);
+        } else {
+          const otherShip = this.otherShips.get(data.id);
+          if (otherShip) {
+            // Kill old tween, new one
+            this.tweens.killTweensOf(otherShip);
+            const duration = Phaser.Math.Distance.Between(otherShip.x, otherShip.y, data.x, data.y) * 5;
+            this.tweens.add({
+              targets: otherShip,
+              x: data.x,
+              y: data.y,
+              duration: duration,
+              ease: 'Sine.easeInOut'
+            });
+            // Update health bar pos
+            updateHealthBar(otherShip.healthBar, data.x, data.y, otherShip.shield || 100, otherShip.armor || 100);
+          }
+        }
+      });
 
       // Handle attacked event and update health bars
       socket.on('attacked', (data) => {

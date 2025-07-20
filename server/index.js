@@ -151,9 +151,47 @@ io.on('connection', async (socket) => {
       systemDoc = await collection.findOne({ id: systemId });
       console.log('Forced node reset to active for testing');
 
-      // Spawn planets if missing (like resources)
+      // Adjustable counts
+      const numPlanets = 5;
+      const numResources = 10;
+      const centerX = 625;  // 2200/2
+      const centerY = 625;  // 2200/2
+      const radius = 1000;
+
+      // Spawn resources if missing - random orbit inside circle
+      if (!systemDoc.resources || systemDoc.resources.length === 0) {
+        const resourcesArray = [];
+        for (let i = 0; i < numResources; i++) {
+          let attempts = 0;
+          let posX, posY;
+          do {
+            const angle = Math.random() * 2 * Math.PI;  // Random angle for orbit
+            const dist = Math.random() * radius;  // Random distance from center
+            posX = centerX + dist * Math.cos(angle);
+            posY = centerY + dist * Math.sin(angle);
+            attempts++;
+          } while (Math.hypot(posX - centerX, posY - centerY) > radius && attempts < 10);  // Retry limit 10
+          resourcesArray.push({ id: `node${i+1}`, type: 'ore', yield: 50, position: { x: posX, y: posY }, active: true });
+        }
+        await collection.updateOne({ id: systemId }, { $set: { resources: resourcesArray } });
+        systemDoc = await collection.findOne({ id: systemId });
+      }
+
+      // Spawn planets if missing - similar random orbit
       if (!systemDoc.planets || systemDoc.planets.length === 0) {
-        const planetsArray = [{ id: 'planet1', position: { x: 200, y: 200 }, active: true, base: null }];
+        const planetsArray = [];
+        for (let i = 0; i < numPlanets; i++) {
+          let attempts = 0;
+          let posX, posY;
+          do {
+            const angle = Math.random() * 2 * Math.PI;
+            const dist = Math.random() * radius;
+            posX = centerX + dist * Math.cos(angle);
+            posY = centerY + dist * Math.sin(angle);
+            attempts++;
+          } while (Math.hypot(posX - centerX, posY - centerY) > radius && attempts < 10);
+          planetsArray.push({ id: `planet${i+1}`, position: { x: posX, y: posY }, active: true, base: null });
+        }
         await collection.updateOne({ id: systemId }, { $set: { planets: planetsArray } });
         systemDoc = await collection.findOne({ id: systemId });
       }
@@ -196,12 +234,31 @@ io.on('connection', async (socket) => {
   });
 
   socket.on('move', async ({ x, y }) => {
-    const player = await Player.findById(socket.playerId);
-    if (player) {
-      player.ship.position.x = x;
-      player.ship.position.y = y;
-      await player.save();
-      io.to(socket.currentSystem).emit('playerMoved', { id: socket.playerId, x, y }); // <-- changed from socket.to(...)
+    const client = new MongoClient(process.env.MONGO_URI);
+    try {
+      await client.connect();
+      const db = client.db(mongoose.connection.db.databaseName); // Keep DB name
+      const playerDoc = await db.collection('players').findOne({ _id: new ObjectId(socket.playerId) });
+      if (!playerDoc) return;
+
+      // Validate: Inside boundary (hardcode for now; match client)
+      const centerX = 1100, centerY = 1100, radius = 1000;
+      const dist = Math.hypot(x - centerX, y - centerY);
+      if (dist > radius) return; // Ignore invalid
+
+      // Optional: Dist limit from current pos (e.g., max speed)
+      const currDist = Math.hypot(playerDoc.ship.position.x - x, playerDoc.ship.position.y - y);
+      if (currDist > 500) return; // Anti-cheat
+
+      await db.collection('players').updateOne(
+        { _id: new ObjectId(socket.playerId) },
+        { $set: { 'ship.position.x': x, 'ship.position.y': y } }
+      );
+      io.to(socket.currentSystem).emit('playerMoved', { id: socket.playerId, x, y });
+    } catch (err) {
+      console.error('Move error:', err);
+    } finally {
+      await client.close();
     }
   });
 
@@ -564,4 +621,3 @@ app.post('/login', async (req, res) => {
     res.status(500).json({ error: 'Login failed' });
   }
 });
-
